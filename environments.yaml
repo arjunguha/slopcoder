@@ -1,0 +1,5 @@
+environments:
+  - name: "MultiPL-E"
+    directory: "/scratch/arjun-nosudo/repos/nuprl/MultiPL-E"
+  - name: "slopcoder-test"
+    directory: "/tmp/slopcoder-test"

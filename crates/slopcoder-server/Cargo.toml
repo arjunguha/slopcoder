@@ -1,0 +1,18 @@
+[package]
+name = "slopcoder-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "HTTP server for the Slopcoder agent management interface"
+
+[dependencies]
+slopcoder-core = { path = "../slopcoder-core" }
+tokio = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+warp = { workspace = true }
+tokio-stream = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
