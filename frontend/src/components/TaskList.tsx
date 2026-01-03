@@ -1,6 +1,7 @@
 import { createResource, For, Show } from "solid-js";
 import { A } from "@solidjs/router";
 import { listTasks } from "../api/client";
+import NewTaskForm from "./NewTaskForm";
 import type { Task } from "../types";
 
 function StatusBadge(props: { status: Task["status"] }) {
@@ -21,28 +22,14 @@ function StatusBadge(props: { status: Task["status"] }) {
 }
 
 function TaskCard(props: { task: Task }) {
-  const lastPrompt = () =>
-    props.task.history.length > 0
-      ? props.task.history[props.task.history.length - 1].prompt
-      : "No prompts yet";
-
   return (
     <A
       href={`/tasks/${props.task.id}`}
       class="block p-4 bg-gray-100 dark:bg-gray-800 rounded-lg shadow hover:shadow-md transition-all border border-gray-200 dark:border-gray-700"
     >
       <div class="flex items-center justify-between mb-2">
-        <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">{props.task.name}</h3>
+        <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">{props.task.feature_branch}</h3>
         <StatusBadge status={props.task.status} />
-      </div>
-      <div class="text-sm text-gray-600 dark:text-gray-400 mb-2">
-        <span class="font-medium text-gray-700 dark:text-gray-300">{props.task.environment}</span>
-        <span class="mx-2">•</span>
-        <span>{props.task.branch}</span>
-      </div>
-      <p class="text-sm text-gray-500 truncate">{lastPrompt()}</p>
-      <div class="mt-2 text-xs text-gray-400 dark:text-gray-500">
-        {props.task.history.length} prompt{props.task.history.length !== 1 ? "s" : ""}
       </div>
     </A>
   );
@@ -61,14 +48,15 @@ export default function TaskList() {
 
   return (
     <div>
+      <div class="mb-10">
+        <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-4">New Task</h1>
+        <div class="p-6 bg-gray-50 dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800">
+          <NewTaskForm />
+        </div>
+      </div>
+
       <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">Tasks</h1>
-        <A
-          href="/new"
-          class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-        >
-          New Task
-        </A>
+        <h2 class="text-xl font-bold text-gray-900 dark:text-gray-100">Tasks</h2>
       </div>
 
       <Show when={tasks.loading}>
@@ -84,9 +72,6 @@ export default function TaskList() {
       <Show when={tasks() && tasks()!.length === 0}>
         <div class="text-center py-12 text-gray-500 dark:text-gray-400">
           <p class="mb-4">No tasks yet</p>
-          <A href="/new" class="text-blue-600 dark:text-blue-400 hover:underline">
-            Create your first task
-          </A>
         </div>
       </Show>
 

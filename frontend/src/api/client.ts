@@ -6,6 +6,8 @@ import type {
   CreateTaskResponse,
   SendPromptRequest,
   CodexEvent,
+  TaskOutputResponse,
+  TaskDiffResponse,
 } from "../types";
 
 // Use relative URLs so the app works from any host
@@ -61,6 +63,14 @@ export async function sendPrompt(taskId: string, req: SendPromptRequest): Promis
     method: "POST",
     body: JSON.stringify(req),
   });
+}
+
+export async function getTaskOutput(taskId: string): Promise<TaskOutputResponse> {
+  return fetchJson(`/api/tasks/${taskId}/output`);
+}
+
+export async function getTaskDiff(taskId: string): Promise<TaskDiffResponse> {
+  return fetchJson(`/api/tasks/${taskId}/diff`);
 }
 
 // WebSocket for streaming events

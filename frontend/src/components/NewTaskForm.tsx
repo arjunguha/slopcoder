@@ -12,8 +12,8 @@ export default function NewTaskForm() {
     return listBranches(env);
   });
 
-  const [name, setName] = createSignal("");
-  const [branch, setBranch] = createSignal("");
+  const [baseBranch, setBaseBranch] = createSignal("");
+  const [featureBranch, setFeatureBranch] = createSignal("");
   const [prompt, setPrompt] = createSignal("");
   const [submitting, setSubmitting] = createSignal(false);
   const [error, setError] = createSignal("");
@@ -25,9 +25,9 @@ export default function NewTaskForm() {
 
     try {
       const result = await createTask({
-        name: name(),
         environment: selectedEnv(),
-        branch: branch(),
+        base_branch: baseBranch(),
+        feature_branch: featureBranch(),
         prompt: prompt(),
       });
       navigate(`/tasks/${result.id}`);
@@ -39,14 +39,12 @@ export default function NewTaskForm() {
   };
 
   const isValid = () =>
-    name().trim() && selectedEnv() && branch() && prompt().trim();
+    selectedEnv() && baseBranch().trim() && featureBranch().trim() && prompt().trim();
 
   const inputClass = "w-full px-4 py-2 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-400 dark:placeholder-gray-500";
 
   return (
-    <div class="max-w-2xl mx-auto">
-      <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-6">New Task</h1>
-
+    <div class="max-w-2xl">
       <Show when={error()}>
         <div class="mb-4 p-4 bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-200 rounded-lg border border-red-300 dark:border-red-700">
           {error()}
@@ -54,20 +52,6 @@ export default function NewTaskForm() {
       </Show>
 
       <form onSubmit={handleSubmit} class="space-y-6">
-        {/* Task Name */}
-        <div>
-          <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Task Name
-          </label>
-          <input
-            type="text"
-            value={name()}
-            onInput={(e) => setName(e.currentTarget.value)}
-            placeholder="e.g., Add user authentication"
-            class={inputClass}
-          />
-        </div>
-
         {/* Environment */}
         <div>
           <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
@@ -77,14 +61,14 @@ export default function NewTaskForm() {
             when={!environments.loading}
             fallback={<div class="text-gray-500 dark:text-gray-400">Loading environments...</div>}
           >
-            <select
-              value={selectedEnv()}
-              onChange={(e) => {
-                setSelectedEnv(e.currentTarget.value);
-                setBranch("");
-              }}
-              class={inputClass}
-            >
+              <select
+                value={selectedEnv()}
+                onChange={(e) => {
+                  setSelectedEnv(e.currentTarget.value);
+                  setBaseBranch("");
+                }}
+                class={inputClass}
+              >
               <option value="">Select an environment</option>
               <For each={environments()}>
                 {(env) => <option value={env.name}>{env.name}</option>}
@@ -93,10 +77,10 @@ export default function NewTaskForm() {
           </Show>
         </div>
 
-        {/* Branch */}
+        {/* Base Branch */}
         <div>
           <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Branch
+            Base Branch
           </label>
           <Show
             when={selectedEnv()}
@@ -111,8 +95,8 @@ export default function NewTaskForm() {
               fallback={<div class="text-gray-500 dark:text-gray-400">Loading branches...</div>}
             >
               <select
-                value={branch()}
-                onChange={(e) => setBranch(e.currentTarget.value)}
+                value={baseBranch()}
+                onChange={(e) => setBaseBranch(e.currentTarget.value)}
                 class={inputClass}
               >
                 <option value="">Select a branch</option>
@@ -122,6 +106,20 @@ export default function NewTaskForm() {
               </select>
             </Show>
           </Show>
+        </div>
+
+        {/* Feature Branch */}
+        <div>
+          <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+            Feature Branch
+          </label>
+          <input
+            type="text"
+            value={featureBranch()}
+            onInput={(e) => setFeatureBranch(e.currentTarget.value)}
+            placeholder="e.g., feature/add-auth"
+            class={inputClass}
+          />
         </div>
 
         {/* Initial Prompt */}
@@ -140,13 +138,6 @@ export default function NewTaskForm() {
 
         {/* Submit */}
         <div class="flex gap-4">
-          <button
-            type="button"
-            onClick={() => navigate("/")}
-            class="px-6 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-          >
-            Cancel
-          </button>
           <button
             type="submit"
             disabled={!isValid() || submitting()}

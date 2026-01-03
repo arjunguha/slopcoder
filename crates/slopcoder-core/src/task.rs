@@ -82,12 +82,14 @@ impl PromptRun {
 pub struct Task {
     /// Unique task identifier.
     pub id: TaskId,
-    /// Human-readable name for this task.
-    pub name: String,
     /// Name of the environment this task belongs to.
     pub environment: String,
-    /// Branch this task is working on.
-    pub branch: String,
+    /// Base branch this task was created from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_branch: Option<String>,
+    /// Feature branch this task is working on.
+    #[serde(default, alias = "branch")]
+    pub feature_branch: String,
     /// Path to the worktree directory.
     pub worktree_path: PathBuf,
     /// Current status of the task.
@@ -103,16 +105,16 @@ pub struct Task {
 impl Task {
     /// Create a new task.
     pub fn new(
-        name: String,
         environment: String,
-        branch: String,
+        base_branch: Option<String>,
+        feature_branch: String,
         worktree_path: PathBuf,
     ) -> Self {
         Self {
             id: TaskId::new(),
-            name,
             environment,
-            branch,
+            base_branch,
+            feature_branch,
             worktree_path,
             status: TaskStatus::Pending,
             session_id: None,
@@ -212,13 +214,14 @@ mod tests {
     #[test]
     fn test_task_creation() {
         let task = Task::new(
-            "Test Task".to_string(),
             "my-env".to_string(),
-            "main".to_string(),
+            Some("main".to_string()),
+            "feature/test".to_string(),
             PathBuf::from("/tmp/worktree"),
         );
 
-        assert_eq!(task.name, "Test Task");
+        assert_eq!(task.base_branch.as_deref(), Some("main"));
+        assert_eq!(task.feature_branch, "feature/test");
         assert_eq!(task.status, TaskStatus::Pending);
         assert!(task.session_id.is_none());
         assert!(task.history.is_empty());
@@ -228,9 +231,9 @@ mod tests {
     #[test]
     fn test_task_run_lifecycle() {
         let mut task = Task::new(
-            "Test".to_string(),
             "env".to_string(),
-            "main".to_string(),
+            Some("main".to_string()),
+            "feature/one".to_string(),
             PathBuf::from("/tmp"),
         );
 
@@ -254,15 +257,15 @@ mod tests {
         let mut store = TaskStore::new();
 
         let task1 = Task::new(
-            "Task 1".to_string(),
             "env1".to_string(),
-            "main".to_string(),
+            Some("main".to_string()),
+            "feature/a".to_string(),
             PathBuf::from("/tmp/1"),
         );
         let task2 = Task::new(
-            "Task 2".to_string(),
             "env2".to_string(),
-            "main".to_string(),
+            Some("main".to_string()),
+            "feature/b".to_string(),
             PathBuf::from("/tmp/2"),
         );
 

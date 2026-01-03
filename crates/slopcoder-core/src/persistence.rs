@@ -288,12 +288,12 @@ mod tests {
     use chrono::Utc;
     use tempfile::TempDir;
 
-    fn create_test_task(env: &str, branch: &str, worktree: PathBuf) -> Task {
+    fn create_test_task(env: &str, base_branch: Option<&str>, feature_branch: &str, worktree: PathBuf) -> Task {
         Task {
             id: TaskId::new(),
-            name: "Test Task".to_string(),
             environment: env.to_string(),
-            branch: branch.to_string(),
+            base_branch: base_branch.map(|b| b.to_string()),
+            feature_branch: feature_branch.to_string(),
             worktree_path: worktree,
             status: TaskStatus::Completed,
             session_id: None,
@@ -307,7 +307,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().join("tasks.yaml");
 
-        let task = create_test_task("test-env", "main", temp_dir.path().join("worktree"));
+        let task = create_test_task("test-env", Some("main"), "feature/test", temp_dir.path().join("worktree"));
         let file = TasksFile {
             tasks: vec![task.clone()],
         };
@@ -316,7 +316,7 @@ mod tests {
 
         let loaded = TasksFile::load(&path).await.unwrap();
         assert_eq!(loaded.tasks.len(), 1);
-        assert_eq!(loaded.tasks[0].name, "Test Task");
+        assert_eq!(loaded.tasks[0].feature_branch, "feature/test");
     }
 
     #[tokio::test]
@@ -330,8 +330,8 @@ mod tests {
         // Reference a worktree that doesn't exist
         let missing_worktree = temp_dir.path().join("missing");
 
-        let task1 = create_test_task("env", "main", existing_worktree);
-        let task2 = create_test_task("env", "feature", missing_worktree);
+        let task1 = create_test_task("env", Some("main"), "feature/a", existing_worktree);
+        let task2 = create_test_task("env", Some("main"), "feature/b", missing_worktree);
         let id2 = task2.id;
 
         let mut file = TasksFile {
@@ -350,7 +350,7 @@ mod tests {
         let worktree = temp_dir.path().join("worktree");
         tokio::fs::create_dir(&worktree).await.unwrap();
 
-        let mut task = create_test_task("env", "main", worktree);
+        let mut task = create_test_task("env", Some("main"), "feature/a", worktree);
         task.status = TaskStatus::Running;
         task.history[0].success = None;
 
@@ -371,7 +371,7 @@ mod tests {
         let mut store = PersistentTaskStore::new();
         store.register_environment("test-env".to_string(), temp_dir.path().to_path_buf());
 
-        let task = create_test_task("test-env", "main", worktree);
+        let task = create_test_task("test-env", Some("main"), "feature/test", worktree);
         let task_id = task.id;
 
         store.insert(task).await.unwrap();
@@ -399,7 +399,7 @@ mod tests {
         let mut store = PersistentTaskStore::new();
         store.register_environment("my-project".to_string(), temp_dir.path().to_path_buf());
 
-        let task = create_test_task("my-project", "feature-branch", worktree.clone());
+        let task = create_test_task("my-project", Some("main"), "feature-branch", worktree.clone());
         let task_id = task.id;
         store.insert(task).await.unwrap();
 
@@ -440,9 +440,9 @@ mod tests {
         let mut store = PersistentTaskStore::new();
         store.register_environment("project".to_string(), temp_dir.path().to_path_buf());
 
-        let task1 = create_test_task("project", "main", worktree1.clone());
-        let task2 = create_test_task("project", "feature-a", worktree2.clone());
-        let task3 = create_test_task("project", "feature-b", worktree3.clone());
+        let task1 = create_test_task("project", Some("main"), "feature/main", worktree1.clone());
+        let task2 = create_test_task("project", Some("main"), "feature-a", worktree2.clone());
+        let task3 = create_test_task("project", Some("main"), "feature-b", worktree3.clone());
         let id1 = task1.id;
         let id2 = task2.id;
         let id3 = task3.id;
@@ -477,7 +477,7 @@ mod tests {
         tokio::fs::create_dir(&worktree).await.unwrap();
 
         // Create a task that's in "running" state (simulating crash mid-execution)
-        let mut task = create_test_task("project", "main", worktree.clone());
+        let mut task = create_test_task("project", Some("main"), "feature/a", worktree.clone());
         task.status = TaskStatus::Running;
         task.history[0].success = None;
         task.history[0].finished_at = None;
@@ -520,9 +520,9 @@ mod tests {
         store.register_environment("project-a".to_string(), temp_dir1.path().to_path_buf());
         store.register_environment("project-b".to_string(), temp_dir2.path().to_path_buf());
 
-        let task1a = create_test_task("project-a", "main", worktree1a.clone());
-        let task1b = create_test_task("project-a", "dev", worktree1b.clone());
-        let task2 = create_test_task("project-b", "main", worktree2.clone());
+        let task1a = create_test_task("project-a", Some("main"), "feature/a", worktree1a.clone());
+        let task1b = create_test_task("project-a", Some("main"), "feature/b", worktree1b.clone());
+        let task2 = create_test_task("project-b", Some("main"), "feature/c", worktree2.clone());
         let id1a = task1a.id;
         let id1b = task1b.id;
         let id2 = task2.id;
@@ -588,7 +588,7 @@ mod tests {
         let mut store = PersistentTaskStore::new();
         store.register_environment("project".to_string(), temp_dir.path().to_path_buf());
 
-        let task = create_test_task("project", "feature", worktree.clone());
+        let task = create_test_task("project", Some("main"), "feature", worktree.clone());
         let task_id = task.id;
         store.insert(task).await.unwrap();
 
@@ -617,8 +617,8 @@ mod tests {
         let mut store = PersistentTaskStore::new();
         store.register_environment("project".to_string(), temp_dir.path().to_path_buf());
 
-        let task1 = create_test_task("project", "main", worktree1.clone());
-        let task2 = create_test_task("project", "feature", worktree2.clone());
+        let task1 = create_test_task("project", Some("main"), "feature/a", worktree1.clone());
+        let task2 = create_test_task("project", Some("main"), "feature/b", worktree2.clone());
         let id1 = task1.id;
         let id2 = task2.id;
 

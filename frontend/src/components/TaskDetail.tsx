@@ -2,13 +2,16 @@ import {
   createSignal,
   createResource,
   createEffect,
+  createMemo,
   onCleanup,
   For,
   Show,
 } from "solid-js";
 import { useParams, A } from "@solidjs/router";
-import { getTask, sendPrompt, subscribeToTask } from "../api/client";
+import { getTask, sendPrompt, subscribeToTask, getTaskOutput, getTaskDiff } from "../api/client";
 import type { Task, CodexEvent, CompletedItem } from "../types";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
 
 function StatusBadge(props: { status: Task["status"] }) {
   const colors = {
@@ -25,6 +28,27 @@ function StatusBadge(props: { status: Task["status"] }) {
       {props.status}
     </span>
   );
+}
+
+function renderPrettyJson(value?: string) {
+  if (!value) return value;
+  try {
+    const parsed = JSON.parse(value);
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return value;
+  }
+}
+
+function MarkdownBlock(props: { content?: string }) {
+  const html = createMemo(() => {
+    const raw = props.content || "";
+    const parsed = marked.parse(raw, { breaks: true });
+    const htmlString = typeof parsed === "string" ? parsed : "";
+    return DOMPurify.sanitize(htmlString);
+  });
+
+  return <div class="markdown" innerHTML={html()} />;
 }
 
 function EventDisplay(props: { event: CodexEvent }) {
@@ -66,7 +90,8 @@ function ItemDisplay(props: { item: CompletedItem }) {
   if (item.type === "reasoning") {
     return (
       <div class="text-gray-600 dark:text-gray-400 italic text-sm py-1">
-        <span class="text-purple-600 dark:text-purple-400">Thinking:</span> {item.text}
+        <span class="text-purple-600 dark:text-purple-400">Thinking:</span>{" "}
+        <span>{item.text}</span>
       </div>
     );
   }
@@ -74,7 +99,8 @@ function ItemDisplay(props: { item: CompletedItem }) {
   if (item.type === "agent_message") {
     return (
       <div class="text-gray-900 dark:text-white py-1">
-        <span class="text-green-600 dark:text-green-400">Agent:</span> {item.text}
+        <div class="text-green-600 dark:text-green-400 mb-1">Agent</div>
+        <MarkdownBlock content={item.text} />
       </div>
     );
   }
@@ -85,7 +111,7 @@ function ItemDisplay(props: { item: CompletedItem }) {
         <span class="text-yellow-700 dark:text-yellow-500">Tool:</span> {item.name}
         {item.arguments && (
           <pre class="text-xs text-gray-600 dark:text-gray-400 mt-1 overflow-x-auto">
-            {item.arguments}
+            {renderPrettyJson(item.arguments)}
           </pre>
         )}
       </div>
@@ -95,14 +121,14 @@ function ItemDisplay(props: { item: CompletedItem }) {
   if (item.type === "tool_output") {
     return (
       <div class="text-gray-700 dark:text-gray-300 font-mono text-xs py-1 bg-gray-200 dark:bg-gray-800 rounded p-2 my-1 overflow-x-auto">
-        <pre>{item.output}</pre>
+        <pre>{renderPrettyJson(item.output)}</pre>
       </div>
     );
   }
 
   return (
     <div class="text-gray-500 text-sm">
-      [{item.type}] {item.text || JSON.stringify(item)}
+      <pre>{renderPrettyJson(JSON.stringify(item, null, 2))}</pre>
     </div>
   );
 }
@@ -110,7 +136,19 @@ function ItemDisplay(props: { item: CompletedItem }) {
 export default function TaskDetail() {
   const params = useParams();
   const [task, { refetch }] = createResource(() => params.id, getTask);
+  const [persistedOutput, { refetch: refetchOutput }] = createResource(
+    () => params.id,
+    async (id) => (await getTaskOutput(id)).events
+  );
   const [events, setEvents] = createSignal<CodexEvent[]>([]);
+  const combinedEvents = createMemo(() => [
+    ...(persistedOutput() || []),
+    ...events(),
+  ]);
+  const [diff, { refetch: refetchDiff }] = createResource(
+    () => params.id,
+    getTaskDiff
+  );
   const [newPrompt, setNewPrompt] = createSignal("");
   const [sending, setSending] = createSignal(false);
   const [error, setError] = createSignal("");
@@ -135,6 +173,9 @@ export default function TaskDetail() {
         () => {
           // On close, refetch task to get final status
           setTimeout(() => refetch(), 500);
+          setTimeout(() => refetchOutput(), 500);
+          setEvents([]);
+          setTimeout(() => refetchDiff(), 500);
         }
       );
 
@@ -177,7 +218,7 @@ export default function TaskDetail() {
           ← Back
         </A>
         <Show when={task()}>
-          <h1 class="text-xl font-bold text-gray-900 dark:text-gray-100 flex-1">{task()!.name}</h1>
+          <h1 class="text-xl font-bold text-gray-900 dark:text-gray-100 flex-1">{task()!.feature_branch}</h1>
           <StatusBadge status={task()!.status} />
         </Show>
       </div>
@@ -197,7 +238,13 @@ export default function TaskDetail() {
         <div class="text-sm text-gray-500 dark:text-gray-400 mb-4">
           <span class="font-medium text-gray-700 dark:text-gray-300">{task()!.environment}</span>
           <span class="mx-2">•</span>
-          <span>{task()!.branch}</span>
+          <span>
+            base: {task()!.base_branch || "unknown"}
+          </span>
+          <span class="mx-2">•</span>
+          <span>
+            feature: {task()!.feature_branch}
+          </span>
           {task()!.session_id && (
             <>
               <span class="mx-2">•</span>
@@ -240,17 +287,22 @@ export default function TaskDetail() {
           </div>
         </div>
 
-        {/* Live Output */}
-        <Show when={events().length > 0 || task()!.status === "running"}>
+        {/* Output */}
+        <Show when={combinedEvents().length > 0 || task()!.status === "running"}>
           <div class="flex-1 flex flex-col min-h-0 mb-4">
-            <h2 class="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Live Output</h2>
+            <h2 class="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Output</h2>
+            <Show when={persistedOutput.error}>
+              <div class="text-sm text-red-600 dark:text-red-400 mb-2">
+                Failed to load saved output: {persistedOutput.error?.message}
+              </div>
+            </Show>
             <div
               ref={outputRef}
-              class="flex-1 bg-gray-100 dark:bg-gray-900 rounded-lg p-4 font-mono text-sm overflow-y-auto border border-gray-200 dark:border-gray-700"
+              class="flex-1 bg-gray-100 dark:bg-gray-900 rounded-lg p-4 text-sm overflow-y-auto border border-gray-200 dark:border-gray-700"
               style="max-height: 400px"
             >
-              <For each={events()}>{(event) => <EventDisplay event={event} />}</For>
-              <Show when={task()!.status === "running" && events().length === 0}>
+              <For each={combinedEvents()}>{(event) => <EventDisplay event={event} />}</For>
+              <Show when={task()!.status === "running" && combinedEvents().length === 0}>
                 <div class="text-gray-500 animate-pulse">
                   Waiting for output...
                 </div>
@@ -258,6 +310,24 @@ export default function TaskDetail() {
             </div>
           </div>
         </Show>
+
+        {/* Git Diff */}
+        <div class="mb-4">
+          <h2 class="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Diff vs Base Branch</h2>
+          <Show when={diff.loading}>
+            <div class="text-gray-500 dark:text-gray-400">Loading diff...</div>
+          </Show>
+          <Show when={diff.error}>
+            <div class="text-sm text-red-600 dark:text-red-400">
+              Failed to load diff: {diff.error?.message}
+            </div>
+          </Show>
+          <Show when={diff()}>
+            <div class="bg-gray-100 dark:bg-gray-900 rounded-lg p-4 font-mono text-xs overflow-x-auto border border-gray-200 dark:border-gray-700 whitespace-pre">
+              {diff()!.diff.trim() || "No changes yet."}
+            </div>
+          </Show>
+        </div>
 
         {/* New Prompt Form */}
         <Show when={task()!.status !== "running"}>

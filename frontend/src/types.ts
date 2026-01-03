@@ -18,9 +18,9 @@ export interface PromptRun {
 
 export interface Task {
   id: string;
-  name: string;
   environment: string;
-  branch: string;
+  base_branch?: string | null;
+  feature_branch: string;
   status: "pending" | "running" | "completed" | "failed";
   session_id: string | null;
   created_at: string;
@@ -28,9 +28,9 @@ export interface Task {
 }
 
 export interface CreateTaskRequest {
-  name: string;
   environment: string;
-  branch: string;
+  base_branch: string;
+  feature_branch: string;
   prompt: string;
 }
 
@@ -41,6 +41,14 @@ export interface CreateTaskResponse {
 
 export interface SendPromptRequest {
   prompt: string;
+}
+
+export interface TaskOutputResponse {
+  events: CodexEvent[];
+}
+
+export interface TaskDiffResponse {
+  diff: string;
 }
 
 // Codex Event Types (from WebSocket)

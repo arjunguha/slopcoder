@@ -1,6 +1,5 @@
 import { Router, Route } from "@solidjs/router";
 import TaskList from "./components/TaskList";
-import NewTaskForm from "./components/NewTaskForm";
 import TaskDetail from "./components/TaskDetail";
 
 function Layout(props: { children: any }) {
@@ -22,7 +21,7 @@ export default function App() {
   return (
     <Router>
       <Route path="/" component={() => <Layout><TaskList /></Layout>} />
-      <Route path="/new" component={() => <Layout><NewTaskForm /></Layout>} />
+      <Route path="/new" component={() => <Layout><TaskList /></Layout>} />
       <Route path="/tasks/:id" component={() => <Layout><TaskDetail /></Layout>} />
     </Router>
   );

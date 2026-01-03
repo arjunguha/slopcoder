@@ -263,9 +263,9 @@ async fn test_task_with_environment() {
         .expect("Should create worktree");
 
     let mut task = Task::new(
-        "Test Task".to_string(),
         env.name.clone(),
-        "main".to_string(),
+        Some("main".to_string()),
+        "feature/test-task".to_string(),
         worktree_path.clone(),
     );
 

@@ -5,10 +5,15 @@ use serde::{Deserialize, Serialize};
 use slopcoder_core::{
     agent::Agent,
     task::{Task, TaskId},
+    CodexEvent,
 };
 use std::convert::Infallible;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 use warp::{http::StatusCode, Filter, Reply};
+use tokio::fs::{File, OpenOptions};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::Command;
 
 /// Create all API routes.
 pub fn routes(
@@ -132,6 +137,16 @@ fn tasks_routes(
         .and(with_state(state.clone()))
         .and_then(send_prompt);
 
+    let output = warp::path!(String / "output")
+        .and(warp::get())
+        .and(with_state(state.clone()))
+        .and_then(get_task_output);
+
+    let diff = warp::path!(String / "diff")
+        .and(warp::get())
+        .and(with_state(state.clone()))
+        .and_then(get_task_diff);
+
     let stream = warp::path!(String / "stream")
         .and(warp::ws())
         .and(with_state(state.clone()))
@@ -139,15 +154,15 @@ fn tasks_routes(
             ws.on_upgrade(move |socket| handle_websocket(socket, id, state))
         });
 
-    list.or(create).or(get).or(prompt).or(stream)
+    list.or(create).or(get).or(prompt).or(output).or(diff).or(stream)
 }
 
 #[derive(Serialize)]
 struct TaskResponse {
     id: String,
-    name: String,
     environment: String,
-    branch: String,
+    base_branch: Option<String>,
+    feature_branch: String,
     status: String,
     session_id: Option<String>,
     created_at: String,
@@ -166,9 +181,9 @@ impl From<&Task> for TaskResponse {
     fn from(task: &Task) -> Self {
         Self {
             id: task.id.to_string(),
-            name: task.name.clone(),
             environment: task.environment.clone(),
-            branch: task.branch.clone(),
+            base_branch: task.base_branch.clone(),
+            feature_branch: task.feature_branch.clone(),
             status: format!("{:?}", task.status).to_lowercase(),
             session_id: task.session_id.map(|id| id.to_string()),
             created_at: task.created_at.to_rfc3339(),
@@ -220,9 +235,9 @@ async fn get_task(id: String, state: AppState) -> Result<impl Reply, Infallible>
 
 #[derive(Deserialize)]
 struct CreateTaskRequest {
-    name: String,
     environment: String,
-    branch: String,
+    base_branch: String,
+    feature_branch: String,
     prompt: String,
 }
 
@@ -248,28 +263,34 @@ async fn create_task(
         ));
     };
 
-    // Create or get worktree
-    let worktree_path = if env.worktree_exists(&req.branch) {
-        env.worktree_path(&req.branch)
-    } else {
-        match env.create_worktree(&req.branch).await {
-            Ok(path) => path,
-            Err(e) => {
-                return Ok(warp::reply::with_status(
-                    warp::reply::json(&ErrorResponse {
-                        error: format!("Failed to create worktree: {}", e),
-                    }),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                ));
-            }
+    // Create a new feature branch worktree
+    let worktree_path = match env
+        .create_worktree_from_base(&req.base_branch, &req.feature_branch)
+        .await
+    {
+        Ok(path) => path,
+        Err(e) => {
+            let status = match e {
+                slopcoder_core::environment::EnvironmentError::BranchExists(_)
+                | slopcoder_core::environment::EnvironmentError::WorktreeExists(_) => {
+                    StatusCode::CONFLICT
+                }
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            return Ok(warp::reply::with_status(
+                warp::reply::json(&ErrorResponse {
+                    error: format!("Failed to create worktree: {}", e),
+                }),
+                status,
+            ));
         }
     };
 
     // Create the task
     let task = Task::new(
-        req.name,
         req.environment,
-        req.branch,
+        Some(req.base_branch),
+        req.feature_branch,
         worktree_path.clone(),
     );
 
@@ -304,6 +325,16 @@ async fn create_task(
 #[derive(Deserialize)]
 struct SendPromptRequest {
     prompt: String,
+}
+
+#[derive(Serialize)]
+struct TaskOutputResponse {
+    events: Vec<CodexEvent>,
+}
+
+#[derive(Serialize)]
+struct TaskDiffResponse {
+    diff: String,
 }
 
 async fn send_prompt(
@@ -368,6 +399,103 @@ async fn send_prompt(
     ))
 }
 
+async fn get_task_output(id: String, state: AppState) -> Result<impl Reply, Infallible> {
+    let Ok(uuid) = Uuid::parse_str(&id) else {
+        return Ok(warp::reply::with_status(
+            warp::reply::json(&ErrorResponse {
+                error: "Invalid task ID".to_string(),
+            }),
+            StatusCode::BAD_REQUEST,
+        ));
+    };
+
+    let task_id = TaskId(uuid);
+    let task = match state.get_task(task_id).await {
+        Some(t) => t,
+        None => {
+            return Ok(warp::reply::with_status(
+                warp::reply::json(&ErrorResponse {
+                    error: "Task not found".to_string(),
+                }),
+                StatusCode::NOT_FOUND,
+            ));
+        }
+    };
+
+    let Some(env_dir) = state.get_environment_directory(&task.environment).await else {
+        return Ok(warp::reply::with_status(
+            warp::reply::json(&ErrorResponse {
+                error: "Environment not found".to_string(),
+            }),
+            StatusCode::NOT_FOUND,
+        ));
+    };
+
+    let output_path = task_output_path(&env_dir, task_id);
+    let events = match read_output_events(&output_path).await {
+        Ok(events) => events,
+        Err(e) => {
+            return Ok(warp::reply::with_status(
+                warp::reply::json(&ErrorResponse {
+                    error: format!("Failed to read output: {}", e),
+                }),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ));
+        }
+    };
+
+    Ok(warp::reply::with_status(
+        warp::reply::json(&TaskOutputResponse { events }),
+        StatusCode::OK,
+    ))
+}
+
+async fn get_task_diff(id: String, state: AppState) -> Result<impl Reply, Infallible> {
+    let Ok(uuid) = Uuid::parse_str(&id) else {
+        return Ok(warp::reply::with_status(
+            warp::reply::json(&ErrorResponse {
+                error: "Invalid task ID".to_string(),
+            }),
+            StatusCode::BAD_REQUEST,
+        ));
+    };
+
+    let task_id = TaskId(uuid);
+    let task = match state.get_task(task_id).await {
+        Some(t) => t,
+        None => {
+            return Ok(warp::reply::with_status(
+                warp::reply::json(&ErrorResponse {
+                    error: "Task not found".to_string(),
+                }),
+                StatusCode::NOT_FOUND,
+            ));
+        }
+    };
+
+    let Some(base_branch) = task.base_branch.as_deref() else {
+        return Ok(warp::reply::with_status(
+            warp::reply::json(&ErrorResponse {
+                error: "Task has no base branch".to_string(),
+            }),
+            StatusCode::BAD_REQUEST,
+        ));
+    };
+
+    match load_git_diff(&task.worktree_path, base_branch).await {
+        Ok(diff) => Ok(warp::reply::with_status(
+            warp::reply::json(&TaskDiffResponse { diff }),
+            StatusCode::OK,
+        )),
+        Err(e) => Ok(warp::reply::with_status(
+            warp::reply::json(&ErrorResponse {
+                error: format!("Failed to get diff: {}", e),
+            }),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        )),
+    }
+}
+
 /// Run the agent for a task.
 async fn run_agent(state: AppState, task_id: TaskId, prompt: String, session_id: Option<Uuid>) {
     let task = match state.get_task(task_id).await {
@@ -376,6 +504,25 @@ async fn run_agent(state: AppState, task_id: TaskId, prompt: String, session_id:
             tracing::error!("Task {} not found", task_id);
             return;
         }
+    };
+
+    let mut output_file = match state.get_environment_directory(&task.environment).await {
+        Some(env_dir) => {
+            let output_path = task_output_path(&env_dir, task_id);
+            match OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&output_path)
+                .await
+            {
+                Ok(file) => Some(file),
+                Err(e) => {
+                    tracing::warn!("Failed to open output log {}: {}", output_path.display(), e);
+                    None
+                }
+            }
+        }
+        None => None,
     };
 
     // Mark the task as running
@@ -420,6 +567,21 @@ async fn run_agent(state: AppState, task_id: TaskId, prompt: String, session_id:
                 if let Some(sid) = event.session_id() {
                     if let Err(e) = state.set_task_session_id(task_id, sid).await {
                         tracing::warn!("Failed to save session ID: {}", e);
+                    }
+                }
+                if let Some(file) = output_file.as_mut() {
+                    match serde_json::to_string(&event) {
+                        Ok(line) => {
+                            if file.write_all(line.as_bytes()).await.is_err()
+                                || file.write_all(b"\n").await.is_err()
+                            {
+                                tracing::warn!("Failed to write output log for {}", task_id);
+                                output_file = None;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to serialize event for {}: {}", task_id, e);
+                        }
                     }
                 }
                 // Broadcast to WebSocket clients
@@ -500,4 +662,50 @@ fn with_state(
     state: AppState,
 ) -> impl Filter<Extract = (AppState,), Error = Infallible> + Clone {
     warp::any().map(move || state.clone())
+}
+
+fn task_output_path(env_dir: &Path, task_id: TaskId) -> PathBuf {
+    env_dir.join(format!("task-{}.jsonl", task_id))
+}
+
+async fn read_output_events(path: &Path) -> Result<Vec<CodexEvent>, std::io::Error> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let file = File::open(path).await?;
+    let mut lines = BufReader::new(file).lines();
+    let mut events = Vec::new();
+
+    while let Some(line) = lines.next_line().await? {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Ok(event) = serde_json::from_str::<CodexEvent>(trimmed) {
+            events.push(event);
+        }
+    }
+
+    Ok(events)
+}
+
+async fn load_git_diff(worktree_path: &Path, base_branch: &str) -> Result<String, std::io::Error> {
+    let output = Command::new("git")
+        .args(["diff", base_branch])
+        .current_dir(worktree_path)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.trim().is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                stderr.to_string(),
+            ));
+        }
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }

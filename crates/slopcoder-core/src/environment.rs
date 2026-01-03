@@ -26,8 +26,14 @@ pub enum EnvironmentError {
     #[error("Failed to list branches: {0}")]
     BranchListError(String),
 
+    #[error("Failed to check branch: {0}")]
+    BranchCheckError(String),
+
     #[error("Failed to create worktree: {0}")]
     WorktreeCreateError(String),
+
+    #[error("Branch already exists: {0}")]
+    BranchExists(String),
 
     #[error("Worktree already exists at {0}")]
     WorktreeExists(PathBuf),
@@ -129,6 +135,67 @@ impl Environment {
 
         let output = Command::new("git")
             .args(["worktree", "add", worktree_path.to_str().unwrap(), branch])
+            .current_dir(&bare_path)
+            .output()
+            .await
+            .map_err(|e| EnvironmentError::WorktreeCreateError(e.to_string()))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(EnvironmentError::WorktreeCreateError(stderr.to_string()));
+        }
+
+        Ok(worktree_path)
+    }
+
+    /// Check if a branch exists in the bare repository.
+    pub async fn branch_exists(&self, branch: &str) -> Result<bool, EnvironmentError> {
+        let bare_path = self.bare_repo_path();
+        let ref_name = format!("refs/heads/{}", branch);
+
+        let output = Command::new("git")
+            .args(["show-ref", "--verify", "--quiet", &ref_name])
+            .current_dir(&bare_path)
+            .output()
+            .await
+            .map_err(|e| EnvironmentError::BranchCheckError(e.to_string()))?;
+
+        if output.status.success() {
+            Ok(true)
+        } else if output.status.code() == Some(1) {
+            Ok(false)
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(EnvironmentError::BranchCheckError(stderr.to_string()))
+        }
+    }
+
+    /// Create a new worktree for a new branch based on a base branch.
+    pub async fn create_worktree_from_base(
+        &self,
+        base_branch: &str,
+        feature_branch: &str,
+    ) -> Result<PathBuf, EnvironmentError> {
+        let worktree_path = self.worktree_path(feature_branch);
+
+        if worktree_path.exists() {
+            return Err(EnvironmentError::WorktreeExists(worktree_path));
+        }
+
+        if self.branch_exists(feature_branch).await? {
+            return Err(EnvironmentError::BranchExists(feature_branch.to_string()));
+        }
+
+        let bare_path = self.bare_repo_path();
+        let output = Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                "-b",
+                feature_branch,
+                worktree_path.to_str().unwrap(),
+                base_branch,
+            ])
             .current_dir(&bare_path)
             .output()
             .await

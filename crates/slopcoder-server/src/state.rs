@@ -46,6 +46,7 @@ struct AppStateInner {
     /// Agent configuration.
     agent_config: AgentConfig,
     /// Path to environments config file.
+    #[allow(dead_code)]
     config_path: PathBuf,
 }
 
@@ -81,6 +82,7 @@ impl AppState {
     }
 
     /// Create state with a given config (for testing).
+    #[allow(dead_code)]
     pub fn with_config(config: EnvironmentConfig) -> Self {
         let mut tasks = PersistentTaskStore::new();
         for env in &config.environments {
@@ -99,6 +101,7 @@ impl AppState {
     }
 
     /// Reload environment configuration from disk.
+    #[allow(dead_code)]
     pub async fn reload_config(&self) -> Result<(), Box<dyn std::error::Error>> {
         let mut inner = self.inner.write().await;
         if inner.config_path.as_os_str().is_empty() {
@@ -125,6 +128,16 @@ impl AppState {
     /// Get a clone of the environment config.
     pub async fn get_config(&self) -> EnvironmentConfig {
         self.inner.read().await.config.clone()
+    }
+
+    /// Get the directory for a named environment.
+    pub async fn get_environment_directory(&self, name: &str) -> Option<PathBuf> {
+        self.inner
+            .read()
+            .await
+            .config
+            .find(name)
+            .map(|env| env.directory.clone())
     }
 
     /// Get the agent config.
