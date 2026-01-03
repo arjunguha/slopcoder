@@ -59,13 +59,13 @@ impl TasksFile {
         Ok(())
     }
 
-    /// Validate worktrees exist, removing tasks whose worktrees are gone.
+    /// Validate worktrees exist, removing completed tasks whose worktrees are gone.
     /// Returns the list of task IDs that were removed.
     pub fn validate_worktrees(&mut self) -> Vec<TaskId> {
         let mut removed = Vec::new();
 
         self.tasks.retain(|task| {
-            if task.worktree_path.exists() {
+            if task.worktree_path.exists() || task.status != TaskStatus::Completed {
                 true
             } else {
                 removed.push(task.id);
@@ -240,14 +240,14 @@ impl PersistentTaskStore {
         }
     }
 
-    /// Validate all worktrees and remove tasks whose worktrees no longer exist.
+    /// Validate all worktrees and remove completed tasks whose worktrees no longer exist.
     /// Returns the number of tasks removed.
     pub async fn cleanup_stale_tasks(&mut self) -> Result<usize, PersistenceError> {
-        // Find tasks with missing worktrees
+        // Find completed tasks with missing worktrees
         let stale_tasks: Vec<(TaskId, String)> = self
             .tasks
             .values()
-            .filter(|t| !t.worktree_path.exists())
+            .filter(|t| t.status == TaskStatus::Completed && !t.worktree_path.exists())
             .map(|t| (t.id, t.environment.clone()))
             .collect();
 
@@ -256,7 +256,10 @@ impl PersistentTaskStore {
         }
 
         let count = stale_tasks.len();
-        tracing::info!("Cleaning up {} tasks with missing worktrees", count);
+        tracing::info!(
+            "Cleaning up {} completed tasks with missing worktrees",
+            count
+        );
 
         // Collect affected environments
         let mut affected_envs: std::collections::HashSet<String> = std::collections::HashSet::new();
