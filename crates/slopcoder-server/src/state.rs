@@ -132,8 +132,17 @@ impl AppState {
         self.inner.read().await.agent_config.clone()
     }
 
-    /// List all tasks.
+    /// List all tasks, cleaning up any with missing worktrees.
     pub async fn list_tasks(&self) -> Vec<Task> {
+        // First, cleanup stale tasks (requires write lock)
+        {
+            let mut inner = self.inner.write().await;
+            if let Err(e) = inner.tasks.cleanup_stale_tasks().await {
+                tracing::warn!("Failed to cleanup stale tasks: {}", e);
+            }
+        }
+
+        // Then return the list (read lock)
         self.inner
             .read()
             .await
