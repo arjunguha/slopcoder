@@ -5,8 +5,8 @@ server. If you secure access to your server, you get the benefits of web-based
 access to agents, without the headache of configuring isolated environments on
 third-party infrastructure.
 
-However, Slopcoder relies on git worktrees. If you don't know how to use them,
-you won't be able to use Slopcoder.
+
+![Screenshot](slopcoder.jpg)
 
 ## Building from Source
 
@@ -14,6 +14,9 @@ Slopcoder relies on TypeScript and Rust. The simplest way to build it from
 source is to run `make all`.
 
 ## Using Slopcoder
+
+Slopcoder relies on git worktrees. If you don't know how to use them, you won't
+be able to use Slopcoder.
 
 Slopcoder makes some assumptions about how you organize local copies of
 your repositories. For a repository R, it assumes you have a dedicated
