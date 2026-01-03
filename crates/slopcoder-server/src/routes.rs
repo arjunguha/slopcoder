@@ -1,6 +1,6 @@
 //! HTTP routes for the Slopcoder API.
 
-use crate::state::AppState;
+use crate::state::{AppState, StateError};
 use serde::{Deserialize, Serialize};
 use slopcoder_core::{
     agent::Agent,
@@ -279,7 +279,14 @@ async fn create_task(
         worktree_path: worktree_path.to_string_lossy().to_string(),
     };
 
-    state.insert_task(task).await;
+    if let Err(e) = state.insert_task(task).await {
+        return Ok(warp::reply::with_status(
+            warp::reply::json(&ErrorResponse {
+                error: format!("Failed to save task: {}", e),
+            }),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ));
+    }
 
     // Start the agent
     let state_clone = state.clone();
@@ -336,6 +343,16 @@ async fn send_prompt(
         ));
     }
 
+    // Check worktree still exists
+    if !state.validate_task_worktree(task_id).await {
+        return Ok(warp::reply::with_status(
+            warp::reply::json(&ErrorResponse {
+                error: "Task worktree no longer exists (may have been removed from CLI)".to_string(),
+            }),
+            StatusCode::GONE,
+        ));
+    }
+
     let session_id = task.session_id;
 
     // Start the agent
@@ -362,8 +379,15 @@ async fn run_agent(state: AppState, task_id: TaskId, prompt: String, session_id:
     };
 
     // Mark the task as running
-    if !state.start_task_run(task_id, prompt.clone()).await {
-        tracing::error!("Failed to start task run for {}", task_id);
+    if let Err(e) = state.start_task_run(task_id, prompt.clone()).await {
+        match e {
+            StateError::WorktreeMissing(_) => {
+                tracing::error!("Task {} worktree no longer exists", task_id);
+            }
+            _ => {
+                tracing::error!("Failed to start task run for {}: {}", task_id, e);
+            }
+        }
         return;
     }
 
@@ -383,7 +407,7 @@ async fn run_agent(state: AppState, task_id: TaskId, prompt: String, session_id:
         Ok(a) => a,
         Err(e) => {
             tracing::error!("Failed to spawn agent: {}", e);
-            state.complete_task_run(task_id, false).await;
+            let _ = state.complete_task_run(task_id, false).await;
             return;
         }
     };
@@ -394,7 +418,9 @@ async fn run_agent(state: AppState, task_id: TaskId, prompt: String, session_id:
             Ok(event) => {
                 // Update session ID if we got it
                 if let Some(sid) = event.session_id() {
-                    state.set_task_session_id(task_id, sid).await;
+                    if let Err(e) = state.set_task_session_id(task_id, sid).await {
+                        tracing::warn!("Failed to save session ID: {}", e);
+                    }
                 }
                 // Broadcast to WebSocket clients
                 state.broadcast_event(task_id, event).await;
@@ -410,13 +436,17 @@ async fn run_agent(state: AppState, task_id: TaskId, prompt: String, session_id:
     let success = match &result {
         Ok(r) => {
             // Update session ID from result
-            state.set_task_session_id(task_id, r.session_id).await;
+            if let Err(e) = state.set_task_session_id(task_id, r.session_id).await {
+                tracing::warn!("Failed to save session ID: {}", e);
+            }
             r.success
         }
         Err(_) => false,
     };
 
-    state.complete_task_run(task_id, success).await;
+    if let Err(e) = state.complete_task_run(task_id, success).await {
+        tracing::warn!("Failed to save task completion: {}", e);
+    }
     tracing::info!("Task {} completed with success={}", task_id, success);
 }
 

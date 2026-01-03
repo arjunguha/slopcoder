@@ -3,14 +3,32 @@
 use slopcoder_core::{
     agent::AgentConfig,
     environment::EnvironmentConfig,
-    task::{Task, TaskId, TaskStore},
-    CodexEvent,
+    persistence::PersistentTaskStore,
+    task::{Task, TaskId},
+    CodexEvent, PersistenceError,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use thiserror::Error;
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
+
+/// Errors that can occur in state operations.
+#[derive(Debug, Error)]
+pub enum StateError {
+    #[error("Task not found: {0}")]
+    TaskNotFound(TaskId),
+
+    #[error("Task worktree no longer exists: {0}")]
+    WorktreeMissing(TaskId),
+
+    #[error("Task cannot accept prompts in current state")]
+    TaskNotReady,
+
+    #[error("Persistence error: {0}")]
+    PersistenceError(#[from] PersistenceError),
+}
 
 /// Shared application state.
 #[derive(Clone)]
@@ -21,8 +39,8 @@ pub struct AppState {
 struct AppStateInner {
     /// Environment configuration.
     config: EnvironmentConfig,
-    /// Task storage.
-    tasks: TaskStore,
+    /// Persistent task storage.
+    tasks: PersistentTaskStore,
     /// Event broadcasters for each running task.
     event_channels: HashMap<TaskId, broadcast::Sender<CodexEvent>>,
     /// Agent configuration.
@@ -33,13 +51,28 @@ struct AppStateInner {
 
 impl AppState {
     /// Create new application state from config file path.
+    /// Loads existing tasks from environment directories.
     pub async fn new(config_path: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
         let config = EnvironmentConfig::load(&config_path).await?;
+
+        // Create persistent store and register all environments
+        let mut tasks = PersistentTaskStore::new();
+        for env in &config.environments {
+            tasks.register_environment(env.name.clone(), env.directory.clone());
+        }
+
+        // Load existing tasks from disk
+        tasks.load_all().await?;
+
+        let task_count = tasks.list().len();
+        if task_count > 0 {
+            tracing::info!("Loaded {} existing tasks from disk", task_count);
+        }
 
         Ok(Self {
             inner: Arc::new(RwLock::new(AppStateInner {
                 config,
-                tasks: TaskStore::new(),
+                tasks,
                 event_channels: HashMap::new(),
                 agent_config: AgentConfig::default(),
                 config_path,
@@ -49,10 +82,15 @@ impl AppState {
 
     /// Create state with a given config (for testing).
     pub fn with_config(config: EnvironmentConfig) -> Self {
+        let mut tasks = PersistentTaskStore::new();
+        for env in &config.environments {
+            tasks.register_environment(env.name.clone(), env.directory.clone());
+        }
+
         Self {
             inner: Arc::new(RwLock::new(AppStateInner {
                 config,
-                tasks: TaskStore::new(),
+                tasks,
                 event_channels: HashMap::new(),
                 agent_config: AgentConfig::default(),
                 config_path: PathBuf::new(),
@@ -67,6 +105,20 @@ impl AppState {
             return Ok(());
         }
         inner.config = EnvironmentConfig::load(&inner.config_path).await?;
+
+        // Re-register environments in case new ones were added
+        // Collect first to avoid borrow conflict
+        let envs: Vec<_> = inner
+            .config
+            .environments
+            .iter()
+            .map(|e| (e.name.clone(), e.directory.clone()))
+            .collect();
+
+        for (name, directory) in envs {
+            inner.tasks.register_environment(name, directory);
+        }
+
         Ok(())
     }
 
@@ -97,39 +149,62 @@ impl AppState {
         self.inner.read().await.tasks.get(id).cloned()
     }
 
-    /// Insert a new task.
-    pub async fn insert_task(&self, task: Task) {
-        self.inner.write().await.tasks.insert(task);
+    /// Check if a task's worktree still exists.
+    pub async fn validate_task_worktree(&self, id: TaskId) -> bool {
+        self.inner.read().await.tasks.validate_task_worktree(id)
     }
 
-    /// Update a task's session ID.
-    pub async fn set_task_session_id(&self, id: TaskId, session_id: Uuid) {
+    /// Insert a new task (persists to disk).
+    pub async fn insert_task(&self, task: Task) -> Result<(), StateError> {
+        self.inner.write().await.tasks.insert(task).await?;
+        Ok(())
+    }
+
+    /// Update a task's session ID (persists to disk).
+    pub async fn set_task_session_id(&self, id: TaskId, session_id: Uuid) -> Result<(), StateError> {
         let mut inner = self.inner.write().await;
         if let Some(task) = inner.tasks.get_mut(id) {
             task.session_id = Some(session_id);
+            inner.tasks.save_task(id).await?;
+            Ok(())
+        } else {
+            Err(StateError::TaskNotFound(id))
         }
     }
 
-    /// Start a run on a task.
-    pub async fn start_task_run(&self, id: TaskId, prompt: String) -> bool {
+    /// Start a run on a task (persists to disk).
+    /// Validates that the worktree still exists before starting.
+    pub async fn start_task_run(&self, id: TaskId, prompt: String) -> Result<(), StateError> {
         let mut inner = self.inner.write().await;
+
+        // Check worktree exists
+        if !inner.tasks.validate_task_worktree(id) {
+            return Err(StateError::WorktreeMissing(id));
+        }
+
         if let Some(task) = inner.tasks.get_mut(id) {
             if task.can_run() {
                 task.start_run(prompt);
-                return true;
+                inner.tasks.save_task(id).await?;
+                Ok(())
+            } else {
+                Err(StateError::TaskNotReady)
             }
+        } else {
+            Err(StateError::TaskNotFound(id))
         }
-        false
     }
 
-    /// Complete a task run.
-    pub async fn complete_task_run(&self, id: TaskId, success: bool) {
+    /// Complete a task run (persists to disk).
+    pub async fn complete_task_run(&self, id: TaskId, success: bool) -> Result<(), StateError> {
         let mut inner = self.inner.write().await;
         if let Some(task) = inner.tasks.get_mut(id) {
             task.complete_run(success);
+            inner.tasks.save_task(id).await?;
         }
         // Clean up the event channel
         inner.event_channels.remove(&id);
+        Ok(())
     }
 
     /// Create an event broadcaster for a task.

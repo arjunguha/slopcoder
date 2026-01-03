@@ -15,4 +15,5 @@ warp = { workspace = true }
 tokio-stream = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
 uuid = { workspace = true }
