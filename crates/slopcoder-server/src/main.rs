@@ -16,16 +16,41 @@ async fn main() {
         .with(EnvFilter::from_default_env().add_directive("slopcoder=info".parse().unwrap()))
         .init();
 
-    // Get config path from args or use default
-    let config_path = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("environments.yaml"));
+    // Parse CLI args
+    let mut args = std::env::args().skip(1);
+    let mut config_path: Option<PathBuf> = None;
+    let mut addr_arg: Option<String> = None;
+    let mut static_dir_arg: Option<PathBuf> = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--addr" | "--bind" => {
+                addr_arg = args.next();
+            }
+            "--static-dir" | "--assets" => {
+                static_dir_arg = args.next().map(PathBuf::from);
+            }
+            "-h" | "--help" => {
+                println!(
+                    "Usage: slopcoder-server [config.yaml] [--addr HOST:PORT] [--static-dir PATH]\n\
+Defaults: config=environments.yaml, addr=127.0.0.1:8080, static-dir=frontend/dist"
+                );
+                return;
+            }
+            _ => {
+                if config_path.is_none() {
+                    config_path = Some(PathBuf::from(arg));
+                }
+            }
+        }
+    }
+
+    let config_path = config_path.unwrap_or_else(|| PathBuf::from("environments.yaml"));
 
     // Check if config exists
     if !config_path.exists() {
         tracing::error!("Config file not found: {}", config_path.display());
-        tracing::info!("Usage: slopcoder-server <config.yaml>");
+        tracing::info!("Usage: slopcoder-server [config.yaml] [--addr HOST:PORT] [--static-dir PATH]");
         tracing::info!("Example config:");
         tracing::info!(
             r#"
@@ -75,9 +100,9 @@ environments:
     let api_routes = api_routes.with(cors);
 
     // Static file serving for frontend
-    let static_dir = std::env::var("SLOPCODER_STATIC_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("frontend/dist"));
+    let static_dir = static_dir_arg
+        .or_else(|| std::env::var("SLOPCODER_STATIC_DIR").ok().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("frontend/dist"));
 
     let static_files = warp::fs::dir(static_dir.clone());
 
@@ -92,11 +117,11 @@ environments:
         .or(static_files)
         .or(spa_fallback);
 
-    // Get address from env or use default (0.0.0.0:3000)
-    let addr: SocketAddr = std::env::var("SLOPCODER_ADDR")
-        .ok()
+    // Get address from args/env or use default (127.0.0.1:8080)
+    let addr: SocketAddr = addr_arg
+        .or_else(|| std::env::var("SLOPCODER_ADDR").ok())
         .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| ([0, 0, 0, 0], 3000).into());
+        .unwrap_or_else(|| ([127, 0, 0, 1], 8080).into());
 
     tracing::info!("Starting server at http://{}", addr);
 
