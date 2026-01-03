@@ -347,8 +347,8 @@ export default function TaskDetail() {
       </Show>
 
       <Show when={task()}>
-        <div class="flex flex-col gap-6 lg:flex-row">
-          <div class="flex-1 min-w-0">
+        <div class="flex flex-col gap-6 lg:flex-row min-h-0">
+          <div class="flex-1 min-w-0 flex flex-col">
             {/* Task Info */}
             <div class="text-sm text-gray-500 dark:text-gray-400 mb-4">
               <span class="font-medium text-gray-700 dark:text-gray-300">{task()!.environment}</span>
@@ -393,6 +393,32 @@ export default function TaskDetail() {
                 </div>
               </div>
             </Show>
+
+            {/* New Prompt Form */}
+            <Show when={task()!.status !== "running"}>
+              <Show when={error()}>
+                <div class="mt-4 mb-4 p-3 bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-200 rounded-lg text-sm border border-red-300 dark:border-red-700">
+                  {error()}
+                </div>
+              </Show>
+
+              <form onSubmit={handleSendPrompt} class="flex gap-2 mt-4">
+                <input
+                  type="text"
+                  value={newPrompt()}
+                  onInput={(e) => setNewPrompt(e.currentTarget.value)}
+                  placeholder="Send a follow-up prompt..."
+                  class="flex-1 px-4 py-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+                <button
+                  type="submit"
+                  disabled={!newPrompt().trim() || sending()}
+                  class="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {sending() ? "Sending..." : "Send"}
+                </button>
+              </form>
+            </Show>
           </div>
 
           {/* Git Diff */}
@@ -407,38 +433,15 @@ export default function TaskDetail() {
               </div>
             </Show>
             <Show when={diff()}>
-              <div class="bg-gray-100 dark:bg-gray-900 rounded-lg p-4 font-mono text-xs overflow-x-auto border border-gray-200 dark:border-gray-700 whitespace-pre">
+              <div
+                class="bg-gray-100 dark:bg-gray-900 rounded-lg p-4 font-mono text-xs overflow-x-auto overflow-y-auto border border-gray-200 dark:border-gray-700 whitespace-pre"
+                style="max-height: 480px"
+              >
                 {diff()!.diff.trim() || "No changes yet."}
               </div>
             </Show>
           </div>
         </div>
-
-        {/* New Prompt Form */}
-        <Show when={task()!.status !== "running"}>
-          <Show when={error()}>
-            <div class="mb-4 p-3 bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-200 rounded-lg text-sm border border-red-300 dark:border-red-700">
-              {error()}
-            </div>
-          </Show>
-
-          <form onSubmit={handleSendPrompt} class="flex gap-2">
-            <input
-              type="text"
-              value={newPrompt()}
-              onInput={(e) => setNewPrompt(e.currentTarget.value)}
-              placeholder="Send a follow-up prompt..."
-              class="flex-1 px-4 py-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
-            <button
-              type="submit"
-              disabled={!newPrompt().trim() || sending()}
-              class="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {sending() ? "Sending..." : "Send"}
-            </button>
-          </form>
-        </Show>
       </Show>
     </div>
   );
