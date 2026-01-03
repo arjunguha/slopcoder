@@ -31,6 +31,9 @@ function TaskCard(props: { task: Task }) {
         <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">{props.task.feature_branch}</h3>
         <StatusBadge status={props.task.status} />
       </div>
+      <div class="text-xs text-gray-500 dark:text-gray-400">
+        {props.task.environment} • {props.task.agent}
+      </div>
     </A>
   );
 }

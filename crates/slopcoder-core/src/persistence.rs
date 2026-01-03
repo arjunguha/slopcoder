@@ -284,6 +284,7 @@ impl Default for PersistentTaskStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::anyagent::AgentKind;
     use crate::task::PromptRun;
     use chrono::Utc;
     use tempfile::TempDir;
@@ -291,6 +292,7 @@ mod tests {
     fn create_test_task(env: &str, base_branch: Option<&str>, feature_branch: &str, worktree: PathBuf) -> Task {
         Task {
             id: TaskId::new(),
+            agent: AgentKind::Codex,
             environment: env.to_string(),
             base_branch: base_branch.map(|b| b.to_string()),
             feature_branch: feature_branch.to_string(),

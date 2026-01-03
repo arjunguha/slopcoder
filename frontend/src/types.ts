@@ -18,6 +18,7 @@ export interface PromptRun {
 
 export interface Task {
   id: string;
+  agent: AgentKind;
   environment: string;
   base_branch?: string | null;
   feature_branch: string;
@@ -32,6 +33,7 @@ export interface CreateTaskRequest {
   base_branch: string;
   feature_branch: string;
   prompt: string;
+  agent: AgentKind;
 }
 
 export interface CreateTaskResponse {
@@ -44,7 +46,7 @@ export interface SendPromptRequest {
 }
 
 export interface TaskOutputResponse {
-  events: CodexEvent[];
+  events: AgentEvent[];
 }
 
 export interface TaskDiffResponse {
@@ -77,8 +79,10 @@ export interface UsageStats {
   output_tokens?: number;
 }
 
-export type CodexEvent =
-  | { type: "thread.started"; thread_id: string }
+export type AgentKind = "codex" | "claude";
+
+export type AgentEvent =
+  | { type: "session.started"; session_id: string }
   | { type: "turn.started" }
   | { type: "item.completed"; item: CompletedItem }
   | { type: "turn.completed"; usage?: UsageStats }

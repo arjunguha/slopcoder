@@ -4,7 +4,7 @@
 //! They are ignored by default; run with `cargo test -- --ignored` to execute.
 
 use slopcoder_core::{
-    agent::{Agent, AgentConfig},
+    anyagent::{resume_anyagent, spawn_anyagent, AgentKind, AnyAgentConfig},
     environment::{Environment, EnvironmentConfig},
     task::{Task, TaskStatus},
 };
@@ -14,6 +14,16 @@ use tokio::process::Command;
 /// Check if codex is available.
 async fn codex_available() -> bool {
     Command::new("codex")
+        .arg("--version")
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Check if claude is available.
+async fn claude_available() -> bool {
+    Command::new("claude")
         .arg("--version")
         .output()
         .await
@@ -131,27 +141,18 @@ async fn test_worktree_creation() {
     assert!(result.is_err());
 }
 
-#[tokio::test]
-#[ignore = "Requires Codex CLI and API key"]
-async fn test_agent_hello_world() {
-    if !codex_available().await {
-        eprintln!("Codex not available, skipping test");
-        return;
-    }
-
+async fn run_agent_hello_world(kind: AgentKind) {
     let (_temp_dir, env) = setup_test_env().await;
 
-    // Create worktree
     let worktree_path = env
         .create_worktree("main")
         .await
         .expect("Should create worktree");
 
-    // Create agent config
-    let config = AgentConfig::default();
+    let config = AnyAgentConfig::default();
 
-    // Spawn agent
-    let mut agent = Agent::spawn(
+    let mut agent = spawn_anyagent(
+        kind,
         &config,
         &worktree_path,
         "Create a file called hello.txt containing the text 'Hello, World!'",
@@ -159,7 +160,6 @@ async fn test_agent_hello_world() {
     .await
     .expect("Should spawn agent");
 
-    // Collect events
     let mut event_count = 0;
     while let Some(result) = agent.next_event().await {
         match result {
@@ -173,7 +173,6 @@ async fn test_agent_hello_world() {
         }
     }
 
-    // Wait for completion
     let result = agent.wait().await.expect("Agent should complete");
     println!("Session ID: {}", result.session_id);
     println!("Success: {}", result.success);
@@ -181,27 +180,16 @@ async fn test_agent_hello_world() {
     assert!(result.success);
     assert!(event_count > 0);
 
-    // Check that the file was created
     let hello_path = worktree_path.join("hello.txt");
     assert!(hello_path.exists(), "hello.txt should exist");
 
     let content = tokio::fs::read_to_string(&hello_path)
         .await
         .expect("Should read hello.txt");
-    assert!(
-        content.contains("Hello"),
-        "Content should contain 'Hello'"
-    );
+    assert!(content.contains("Hello"), "Content should contain 'Hello'");
 }
 
-#[tokio::test]
-#[ignore = "Requires Codex CLI and API key"]
-async fn test_agent_resume() {
-    if !codex_available().await {
-        eprintln!("Codex not available, skipping test");
-        return;
-    }
-
+async fn run_agent_resume(kind: AgentKind) {
     let (_temp_dir, env) = setup_test_env().await;
 
     let worktree_path = env
@@ -209,10 +197,10 @@ async fn test_agent_resume() {
         .await
         .expect("Should create worktree");
 
-    let config = AgentConfig::default();
+    let config = AnyAgentConfig::default();
 
-    // First run: create hello.txt
-    let mut agent = Agent::spawn(
+    let mut agent = spawn_anyagent(
+        kind,
         &config,
         &worktree_path,
         "Create a file called hello.txt containing 'Hello, World!'",
@@ -228,8 +216,8 @@ async fn test_agent_resume() {
     let session_id = result1.session_id;
     println!("First session ID: {}", session_id);
 
-    // Second run: modify the file using resume
-    let mut agent = Agent::resume(
+    let mut agent = resume_anyagent(
+        kind,
         &config,
         &worktree_path,
         session_id,
@@ -243,14 +231,34 @@ async fn test_agent_resume() {
     let result2 = agent.wait().await.expect("Second run should complete");
     assert!(result2.success);
 
-    // Verify the file was modified
     let content = tokio::fs::read_to_string(worktree_path.join("hello.txt"))
         .await
         .expect("Should read hello.txt");
-    assert!(
-        content.contains("Goodbye"),
-        "Content should contain 'Goodbye'"
-    );
+    assert!(content.contains("Goodbye"), "Content should contain 'Goodbye'");
+}
+
+#[tokio::test]
+async fn test_codex_agent_hello_world() {
+    assert!(codex_available().await, "Codex CLI not available");
+    run_agent_hello_world(AgentKind::Codex).await;
+}
+
+#[tokio::test]
+async fn test_codex_agent_resume() {
+    assert!(codex_available().await, "Codex CLI not available");
+    run_agent_resume(AgentKind::Codex).await;
+}
+
+#[tokio::test]
+async fn test_claude_agent_hello_world() {
+    assert!(claude_available().await, "Claude CLI not available");
+    run_agent_hello_world(AgentKind::Claude).await;
+}
+
+#[tokio::test]
+async fn test_claude_agent_resume() {
+    assert!(claude_available().await, "Claude CLI not available");
+    run_agent_resume(AgentKind::Claude).await;
 }
 
 #[tokio::test]
@@ -263,6 +271,7 @@ async fn test_task_with_environment() {
         .expect("Should create worktree");
 
     let mut task = Task::new(
+        AgentKind::Codex,
         env.name.clone(),
         Some("main".to_string()),
         "feature/test-task".to_string(),

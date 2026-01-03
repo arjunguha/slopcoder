@@ -5,7 +5,7 @@ import type {
   CreateTaskRequest,
   CreateTaskResponse,
   SendPromptRequest,
-  CodexEvent,
+  AgentEvent,
   TaskOutputResponse,
   TaskDiffResponse,
 } from "../types";
@@ -76,7 +76,7 @@ export async function getTaskDiff(taskId: string): Promise<TaskDiffResponse> {
 // WebSocket for streaming events
 export function subscribeToTask(
   taskId: string,
-  onEvent: (event: CodexEvent) => void,
+  onEvent: (event: AgentEvent) => void,
   onClose?: () => void
 ): () => void {
   // Build WebSocket URL from current location
@@ -86,7 +86,7 @@ export function subscribeToTask(
 
   ws.onmessage = (event) => {
     try {
-      const data = JSON.parse(event.data) as CodexEvent;
+      const data = JSON.parse(event.data) as AgentEvent;
       onEvent(data);
     } catch (e) {
       console.error("Failed to parse event:", e);

@@ -3,9 +3,9 @@
 use crate::state::{AppState, StateError};
 use serde::{Deserialize, Serialize};
 use slopcoder_core::{
-    agent::Agent,
+    anyagent::{resume_anyagent, spawn_anyagent, AgentKind},
     task::{Task, TaskId},
-    CodexEvent,
+    AgentEvent,
 };
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
@@ -160,6 +160,7 @@ fn tasks_routes(
 #[derive(Serialize)]
 struct TaskResponse {
     id: String,
+    agent: String,
     environment: String,
     base_branch: Option<String>,
     feature_branch: String,
@@ -181,6 +182,7 @@ impl From<&Task> for TaskResponse {
     fn from(task: &Task) -> Self {
         Self {
             id: task.id.to_string(),
+            agent: format!("{:?}", task.agent).to_lowercase(),
             environment: task.environment.clone(),
             base_branch: task.base_branch.clone(),
             feature_branch: task.feature_branch.clone(),
@@ -239,6 +241,8 @@ struct CreateTaskRequest {
     base_branch: String,
     feature_branch: String,
     prompt: String,
+    #[serde(default)]
+    agent: Option<AgentKind>,
 }
 
 #[derive(Serialize)]
@@ -288,6 +292,7 @@ async fn create_task(
 
     // Create the task
     let task = Task::new(
+        req.agent.unwrap_or_default(),
         req.environment,
         Some(req.base_branch),
         req.feature_branch,
@@ -329,7 +334,7 @@ struct SendPromptRequest {
 
 #[derive(Serialize)]
 struct TaskOutputResponse {
-    events: Vec<CodexEvent>,
+    events: Vec<AgentEvent>,
 }
 
 #[derive(Serialize)]
@@ -544,7 +549,7 @@ async fn run_agent(state: AppState, task_id: TaskId, prompt: String, session_id:
     let agent_config = state.get_agent_config().await;
 
     // Emit prompt event for output log + websocket
-    let prompt_event = CodexEvent::PromptSent {
+    let prompt_event = AgentEvent::PromptSent {
         prompt: prompt.clone(),
     };
     if let Some(file) = output_file.as_mut() {
@@ -561,9 +566,9 @@ async fn run_agent(state: AppState, task_id: TaskId, prompt: String, session_id:
 
     // Spawn the agent
     let agent_result = if let Some(sid) = session_id {
-        Agent::resume(&agent_config, &task.worktree_path, sid, &prompt).await
+        resume_anyagent(task.agent, &agent_config, &task.worktree_path, sid, &prompt).await
     } else {
-        Agent::spawn(&agent_config, &task.worktree_path, &prompt).await
+        spawn_anyagent(task.agent, &agent_config, &task.worktree_path, &prompt).await
     };
 
     let mut agent = match agent_result {
@@ -684,7 +689,7 @@ fn task_output_path(env_dir: &Path, task_id: TaskId) -> PathBuf {
     env_dir.join(format!("task-{}.jsonl", task_id))
 }
 
-async fn read_output_events(path: &Path) -> Result<Vec<CodexEvent>, std::io::Error> {
+async fn read_output_events(path: &Path) -> Result<Vec<AgentEvent>, std::io::Error> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -698,7 +703,7 @@ async fn read_output_events(path: &Path) -> Result<Vec<CodexEvent>, std::io::Err
         if trimmed.is_empty() {
             continue;
         }
-        if let Ok(event) = serde_json::from_str::<CodexEvent>(trimmed) {
+        if let Ok(event) = serde_json::from_str::<AgentEvent>(trimmed) {
             events.push(event);
         }
     }
