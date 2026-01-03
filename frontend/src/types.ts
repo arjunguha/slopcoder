@@ -61,6 +61,14 @@ export interface CompletedItem {
   arguments?: string;
   call_id?: string;
   output?: string;
+  command?: string;
+  aggregated_output?: string;
+  exit_code?: number;
+  status?: string;
+  changes?: Array<{
+    kind: string;
+    path: string;
+  }>;
 }
 
 export interface UsageStats {
@@ -75,4 +83,5 @@ export type CodexEvent =
   | { type: "item.completed"; item: CompletedItem }
   | { type: "turn.completed"; usage?: UsageStats }
   | { type: "background_event"; event?: string }
+  | { type: "prompt.sent"; prompt: string }
   | { type: "unknown" };

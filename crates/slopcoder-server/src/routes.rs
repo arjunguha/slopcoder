@@ -543,6 +543,22 @@ async fn run_agent(state: AppState, task_id: TaskId, prompt: String, session_id:
 
     let agent_config = state.get_agent_config().await;
 
+    // Emit prompt event for output log + websocket
+    let prompt_event = CodexEvent::PromptSent {
+        prompt: prompt.clone(),
+    };
+    if let Some(file) = output_file.as_mut() {
+        if let Ok(line) = serde_json::to_string(&prompt_event) {
+            if file.write_all(line.as_bytes()).await.is_err()
+                || file.write_all(b"\n").await.is_err()
+            {
+                tracing::warn!("Failed to write prompt event for {}", task_id);
+                output_file = None;
+            }
+        }
+    }
+    state.broadcast_event(task_id, prompt_event).await;
+
     // Spawn the agent
     let agent_result = if let Some(sid) = session_id {
         Agent::resume(&agent_config, &task.worktree_path, sid, &prompt).await

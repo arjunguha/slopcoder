@@ -40,6 +40,99 @@ function renderPrettyJson(value?: string) {
   }
 }
 
+function formatPath(path: string) {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 2) return path;
+  return parts.slice(parts.length - 2).join("/");
+}
+
+function summarizeOutput(output?: string) {
+  if (!output) return "No output";
+  const lines = output.split(/\r?\n/);
+  const lineCount = lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
+  const size = output.length;
+  return `${lineCount} line${lineCount === 1 ? "" : "s"}, ${size} char${size === 1 ? "" : "s"}`;
+}
+
+function summarizeJsonShape(value?: string) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return `JSON array (${parsed.length} item${parsed.length === 1 ? "" : "s"})`;
+    }
+    if (parsed && typeof parsed === "object") {
+      const keys = Object.keys(parsed);
+      const preview = keys.slice(0, 4).join(", ");
+      return `JSON object (${keys.length} key${keys.length === 1 ? "" : "s"}${preview ? `: ${preview}` : ""})`;
+    }
+    return `JSON ${typeof parsed}`;
+  } catch {
+    return null;
+  }
+}
+
+function CommandExecutionSummary(props: { item: CompletedItem }) {
+  const command = props.item.command || "Command";
+  const status = props.item.status || "completed";
+  const exitCode = props.item.exit_code;
+  const summary = summarizeOutput(props.item.aggregated_output || props.item.output);
+  return (
+    <div class="text-sm text-gray-700 dark:text-gray-300 py-1">
+      <div class="font-medium text-gray-900 dark:text-gray-100">
+        Ran: <span class="font-mono">{command}</span>
+      </div>
+      <div class="text-xs text-gray-500 dark:text-gray-400">
+        Status: {status}
+        {exitCode !== undefined && ` (exit ${exitCode})`}
+        <span class="mx-2">•</span>
+        Output: {summary}
+      </div>
+    </div>
+  );
+}
+
+function FileChangeSummary(props: { item: CompletedItem }) {
+  const changes = props.item.changes || [];
+  const byKind = changes.reduce<Record<string, number>>((acc, change) => {
+    acc[change.kind] = (acc[change.kind] || 0) + 1;
+    return acc;
+  }, {});
+  const kinds = Object.keys(byKind)
+    .map((kind) => `${byKind[kind]} ${kind}`)
+    .join(", ");
+  const files = changes.slice(0, 3).map((change) => formatPath(change.path));
+  return (
+    <div class="text-sm text-gray-700 dark:text-gray-300 py-1">
+      <div class="font-medium text-gray-900 dark:text-gray-100">
+        Files changed: {changes.length}
+        {kinds ? ` (${kinds})` : ""}
+      </div>
+      {files.length > 0 && (
+        <div class="text-xs text-gray-500 dark:text-gray-400">
+          {files.join(", ")}
+          {changes.length > files.length && "…"}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ToolOutputSummary(props: { item: CompletedItem }) {
+  const output = props.item.output || "";
+  const jsonShape = summarizeJsonShape(output);
+  const summary = summarizeOutput(output);
+  return (
+    <div class="text-sm text-gray-700 dark:text-gray-300 py-1">
+      <div class="font-medium text-gray-900 dark:text-gray-100">Tool output</div>
+      <div class="text-xs text-gray-500 dark:text-gray-400">
+        {jsonShape ? `${jsonShape} • ` : ""}
+        {summary}
+      </div>
+    </div>
+  );
+}
+
 function MarkdownBlock(props: { content?: string }) {
   const html = createMemo(() => {
     const raw = props.content || "";
@@ -77,6 +170,17 @@ function EventDisplay(props: { event: CodexEvent }) {
             ({e.usage.input_tokens} in / {e.usage.output_tokens} out)
           </span>
         )}
+      </div>
+    );
+  }
+
+  if (e.type === "prompt.sent") {
+    return (
+      <div class="py-2">
+        <div class="text-xs text-gray-500 dark:text-gray-400 mb-1">Prompt</div>
+        <div class="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-lg px-3 py-2 text-sm text-gray-900 dark:text-gray-100">
+          {e.prompt}
+        </div>
       </div>
     );
   }
@@ -120,15 +224,24 @@ function ItemDisplay(props: { item: CompletedItem }) {
 
   if (item.type === "tool_output") {
     return (
-      <div class="text-gray-700 dark:text-gray-300 font-mono text-xs py-1 bg-gray-200 dark:bg-gray-800 rounded p-2 my-1 overflow-x-auto">
-        <pre>{renderPrettyJson(item.output)}</pre>
-      </div>
+      <ToolOutputSummary item={item} />
     );
   }
 
+  if (item.type === "command_execution") {
+    return <CommandExecutionSummary item={item} />;
+  }
+
+  if (item.type === "file_change") {
+    return <FileChangeSummary item={item} />;
+  }
+
   return (
-    <div class="text-gray-500 text-sm">
-      <pre>{renderPrettyJson(JSON.stringify(item, null, 2))}</pre>
+    <div class="text-gray-600 dark:text-gray-400 text-sm py-1">
+      <div class="font-medium text-gray-900 dark:text-gray-100">
+        Event: {item.type}
+      </div>
+      {item.text && <div class="text-xs text-gray-500 dark:text-gray-400">{item.text}</div>}
     </div>
   );
 }
@@ -234,99 +347,69 @@ export default function TaskDetail() {
       </Show>
 
       <Show when={task()}>
-        {/* Task Info */}
-        <div class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-          <span class="font-medium text-gray-700 dark:text-gray-300">{task()!.environment}</span>
-          <span class="mx-2">•</span>
-          <span>
-            base: {task()!.base_branch || "unknown"}
-          </span>
-          <span class="mx-2">•</span>
-          <span>
-            feature: {task()!.feature_branch}
-          </span>
-          {task()!.session_id && (
-            <>
+        <div class="flex flex-col gap-6 lg:flex-row">
+          <div class="flex-1 min-w-0">
+            {/* Task Info */}
+            <div class="text-sm text-gray-500 dark:text-gray-400 mb-4">
+              <span class="font-medium text-gray-700 dark:text-gray-300">{task()!.environment}</span>
               <span class="mx-2">•</span>
-              <span class="font-mono text-xs">{task()!.session_id}</span>
-            </>
-          )}
-        </div>
-
-        {/* History */}
-        <div class="mb-4">
-          <h2 class="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">History</h2>
-          <div class="space-y-2">
-            <For each={task()!.history}>
-              {(run, index) => (
-                <div class="p-3 bg-gray-100 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
-                  <div class="flex items-center justify-between mb-1">
-                    <span class="text-xs text-gray-500">
-                      Prompt {index() + 1}
-                    </span>
-                    <span
-                      class={`text-xs ${
-                        run.success === true
-                          ? "text-green-600 dark:text-green-400"
-                          : run.success === false
-                          ? "text-red-600 dark:text-red-400"
-                          : "text-blue-600 dark:text-blue-400"
-                      }`}
-                    >
-                      {run.success === true
-                        ? "✓ Success"
-                        : run.success === false
-                        ? "✗ Failed"
-                        : "Running..."}
-                    </span>
-                  </div>
-                  <p class="text-gray-800 dark:text-gray-200">{run.prompt}</p>
-                </div>
+              <span>
+                base: {task()!.base_branch || "unknown"}
+              </span>
+              <span class="mx-2">•</span>
+              <span>
+                feature: {task()!.feature_branch}
+              </span>
+              {task()!.session_id && (
+                <>
+                  <span class="mx-2">•</span>
+                  <span class="font-mono text-xs">{task()!.session_id}</span>
+                </>
               )}
-            </For>
-          </div>
-        </div>
+            </div>
 
-        {/* Output */}
-        <Show when={combinedEvents().length > 0 || task()!.status === "running"}>
-          <div class="flex-1 flex flex-col min-h-0 mb-4">
-            <h2 class="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Output</h2>
-            <Show when={persistedOutput.error}>
-              <div class="text-sm text-red-600 dark:text-red-400 mb-2">
-                Failed to load saved output: {persistedOutput.error?.message}
+            {/* Output */}
+            <Show when={combinedEvents().length > 0 || task()!.status === "running"}>
+              <div class="flex-1 flex flex-col min-h-0">
+                <h2 class="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Output</h2>
+                <Show when={persistedOutput.error}>
+                  <div class="text-sm text-red-600 dark:text-red-400 mb-2">
+                    Failed to load saved output: {persistedOutput.error?.message}
+                  </div>
+                </Show>
+                <div
+                  ref={outputRef}
+                  class="flex-1 bg-gray-100 dark:bg-gray-900 rounded-lg p-4 text-sm overflow-y-auto border border-gray-200 dark:border-gray-700"
+                  style="max-height: 480px"
+                >
+                  <For each={combinedEvents()}>{(event) => <EventDisplay event={event} />}</For>
+                  <Show when={task()!.status === "running" && combinedEvents().length === 0}>
+                    <div class="text-gray-500 animate-pulse">
+                      Waiting for output...
+                    </div>
+                  </Show>
+                </div>
               </div>
             </Show>
-            <div
-              ref={outputRef}
-              class="flex-1 bg-gray-100 dark:bg-gray-900 rounded-lg p-4 text-sm overflow-y-auto border border-gray-200 dark:border-gray-700"
-              style="max-height: 400px"
-            >
-              <For each={combinedEvents()}>{(event) => <EventDisplay event={event} />}</For>
-              <Show when={task()!.status === "running" && combinedEvents().length === 0}>
-                <div class="text-gray-500 animate-pulse">
-                  Waiting for output...
-                </div>
-              </Show>
-            </div>
           </div>
-        </Show>
 
-        {/* Git Diff */}
-        <div class="mb-4">
-          <h2 class="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Diff vs Base Branch</h2>
-          <Show when={diff.loading}>
-            <div class="text-gray-500 dark:text-gray-400">Loading diff...</div>
-          </Show>
-          <Show when={diff.error}>
-            <div class="text-sm text-red-600 dark:text-red-400">
-              Failed to load diff: {diff.error?.message}
-            </div>
-          </Show>
-          <Show when={diff()}>
-            <div class="bg-gray-100 dark:bg-gray-900 rounded-lg p-4 font-mono text-xs overflow-x-auto border border-gray-200 dark:border-gray-700 whitespace-pre">
-              {diff()!.diff.trim() || "No changes yet."}
-            </div>
-          </Show>
+          {/* Git Diff */}
+          <div class="w-full lg:w-1/3 xl:w-1/2">
+            <h2 class="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Diff vs Base Branch</h2>
+            <Show when={diff.loading}>
+              <div class="text-gray-500 dark:text-gray-400">Loading diff...</div>
+            </Show>
+            <Show when={diff.error}>
+              <div class="text-sm text-red-600 dark:text-red-400">
+                Failed to load diff: {diff.error?.message}
+              </div>
+            </Show>
+            <Show when={diff()}>
+              <div class="bg-gray-100 dark:bg-gray-900 rounded-lg p-4 font-mono text-xs overflow-x-auto border border-gray-200 dark:border-gray-700 whitespace-pre">
+                {diff()!.diff.trim() || "No changes yet."}
+              </div>
+            </Show>
+          </div>
         </div>
 
         {/* New Prompt Form */}

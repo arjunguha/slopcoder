@@ -41,7 +41,7 @@ export default function NewTaskForm() {
   const isValid = () =>
     selectedEnv() && baseBranch().trim() && featureBranch().trim() && prompt().trim();
 
-  const inputClass = "w-full px-4 py-2 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-400 dark:placeholder-gray-500";
+  const inputClass = "w-full px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-400 dark:placeholder-gray-500";
 
   return (
     <div class="max-w-2xl">
@@ -51,16 +51,17 @@ export default function NewTaskForm() {
         </div>
       </Show>
 
-      <form onSubmit={handleSubmit} class="space-y-6">
-        {/* Environment */}
-        <div>
-          <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Environment
-          </label>
-          <Show
-            when={!environments.loading}
-            fallback={<div class="text-gray-500 dark:text-gray-400">Loading environments...</div>}
-          >
+      <form onSubmit={handleSubmit} class="space-y-4">
+        <div class="grid gap-3 md:grid-cols-3">
+          {/* Environment */}
+          <div>
+            <label class="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Environment
+            </label>
+            <Show
+              when={!environments.loading}
+              fallback={<div class="text-gray-500 dark:text-gray-400 text-xs">Loading environments...</div>}
+            >
               <select
                 value={selectedEnv()}
                 onChange={(e) => {
@@ -69,57 +70,58 @@ export default function NewTaskForm() {
                 }}
                 class={inputClass}
               >
-              <option value="">Select an environment</option>
-              <For each={environments()}>
-                {(env) => <option value={env.name}>{env.name}</option>}
-              </For>
-            </select>
-          </Show>
-        </div>
-
-        {/* Base Branch */}
-        <div>
-          <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Base Branch
-          </label>
-          <Show
-            when={selectedEnv()}
-            fallback={
-              <div class="text-gray-400 dark:text-gray-500 text-sm">
-                Select an environment first
-              </div>
-            }
-          >
-            <Show
-              when={!branches.loading}
-              fallback={<div class="text-gray-500 dark:text-gray-400">Loading branches...</div>}
-            >
-              <select
-                value={baseBranch()}
-                onChange={(e) => setBaseBranch(e.currentTarget.value)}
-                class={inputClass}
-              >
-                <option value="">Select a branch</option>
-                <For each={branches()}>
-                  {(b) => <option value={b}>{b}</option>}
+                <option value="">Select</option>
+                <For each={environments()}>
+                  {(env) => <option value={env.name}>{env.name}</option>}
                 </For>
               </select>
             </Show>
-          </Show>
-        </div>
+          </div>
 
-        {/* Feature Branch */}
-        <div>
-          <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Feature Branch
-          </label>
-          <input
-            type="text"
-            value={featureBranch()}
-            onInput={(e) => setFeatureBranch(e.currentTarget.value)}
-            placeholder="e.g., feature/add-auth"
-            class={inputClass}
-          />
+          {/* Base Branch */}
+          <div>
+            <label class="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Base Branch
+            </label>
+            <Show
+              when={selectedEnv()}
+              fallback={
+                <div class="text-gray-400 dark:text-gray-500 text-xs">
+                  Select environment
+                </div>
+              }
+            >
+              <Show
+                when={!branches.loading}
+                fallback={<div class="text-gray-500 dark:text-gray-400 text-xs">Loading branches...</div>}
+              >
+                <select
+                  value={baseBranch()}
+                  onChange={(e) => setBaseBranch(e.currentTarget.value)}
+                  class={inputClass}
+                >
+                  <option value="">Select</option>
+                  <For each={branches()}>
+                    {(b) => <option value={b}>{b}</option>}
+                  </For>
+                </select>
+              </Show>
+            </Show>
+          </div>
+
+          {/* Feature Branch */}
+          <div>
+            <label class="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Feature Branch
+            </label>
+            <input
+              type="text"
+              value={featureBranch()}
+              onInput={(e) => setFeatureBranch(e.currentTarget.value)}
+              placeholder="feature/add-auth"
+              class={inputClass}
+            />
+          </div>
         </div>
 
         {/* Initial Prompt */}
@@ -137,11 +139,11 @@ export default function NewTaskForm() {
         </div>
 
         {/* Submit */}
-        <div class="flex gap-4">
+        <div class="flex gap-3">
           <button
             type="submit"
             disabled={!isValid() || submitting()}
-            class="flex-1 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            class="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {submitting() ? "Creating..." : "Create Task"}
           </button>

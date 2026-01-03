@@ -42,6 +42,12 @@ pub enum CodexEvent {
         extra: serde_json::Value,
     },
 
+    /// Prompt sent to the agent.
+    #[serde(rename = "prompt.sent")]
+    PromptSent {
+        prompt: String,
+    },
+
     /// Unknown event type - we capture these to avoid breaking on new event types.
     #[serde(other)]
     Unknown,

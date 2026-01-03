@@ -50,6 +50,7 @@ pub enum TaskStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptRun {
     /// The prompt text sent to the agent.
+    #[serde(default, skip_serializing)]
     pub prompt: String,
     /// When this prompt was sent.
     pub started_at: DateTime<Utc>,
