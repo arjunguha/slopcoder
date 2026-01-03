@@ -48,6 +48,21 @@ environments:
 
     tracing::info!("Loaded config from {}", config_path.display());
 
+    // Log environment info
+    let config = state.get_config().await;
+    for env in &config.environments {
+        tracing::info!(
+            "Environment '{}' at {} (tasks.yaml: {})",
+            env.name,
+            env.directory.display(),
+            env.directory.join("tasks.yaml").display()
+        );
+    }
+
+    // Log task count
+    let tasks = state.list_tasks().await;
+    tracing::info!("Loaded {} tasks from disk", tasks.len());
+
     // Build API routes
     let api_routes = routes::routes(state);
 

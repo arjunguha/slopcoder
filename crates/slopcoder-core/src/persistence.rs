@@ -53,7 +53,9 @@ impl TasksFile {
     /// Save tasks to a YAML file.
     pub async fn save(&self, path: &Path) -> Result<(), PersistenceError> {
         let content = serde_yaml::to_string(self)?;
+        tracing::debug!("Saving {} tasks to {}", self.tasks.len(), path.display());
         tokio::fs::write(path, content).await?;
+        tracing::info!("Saved {} tasks to {}", self.tasks.len(), path.display());
         Ok(())
     }
 
@@ -152,10 +154,15 @@ impl PersistentTaskStore {
 
     /// Save tasks for a specific environment.
     async fn save_environment(&self, env_name: &str) -> Result<(), PersistenceError> {
+        tracing::debug!("save_environment called for '{}'", env_name);
+
         let env_dir = self
             .env_directories
             .get(env_name)
-            .ok_or_else(|| PersistenceError::DirectoryNotFound(PathBuf::from(env_name)))?;
+            .ok_or_else(|| {
+                tracing::error!("Environment '{}' not found in directories: {:?}", env_name, self.env_directories.keys().collect::<Vec<_>>());
+                PersistenceError::DirectoryNotFound(PathBuf::from(env_name))
+            })?;
 
         let tasks: Vec<Task> = self
             .tasks
@@ -163,6 +170,8 @@ impl PersistentTaskStore {
             .filter(|t| t.environment == env_name)
             .cloned()
             .collect();
+
+        tracing::debug!("Found {} tasks for environment '{}'", tasks.len(), env_name);
 
         let file = TasksFile { tasks };
         let path = TasksFile::path_for_env(env_dir);
