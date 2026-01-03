@@ -91,10 +91,10 @@ export default function NewTaskForm() {
                 </div>
               }
             >
-              <Show
-                when={!branches.loading}
-                fallback={<div class="text-gray-500 dark:text-gray-400 text-xs">Loading branches...</div>}
-              >
+              <Show when={branches.loading}>
+                <div class="text-gray-500 dark:text-gray-400 text-xs">Loading branches...</div>
+              </Show>
+              <Show when={!branches.loading && !branches.error}>
                 <select
                   value={baseBranch()}
                   onChange={(e) => setBaseBranch(e.currentTarget.value)}
@@ -105,6 +105,11 @@ export default function NewTaskForm() {
                     {(b) => <option value={b}>{b}</option>}
                   </For>
                 </select>
+              </Show>
+              <Show when={branches.error}>
+                <div class="mt-1 text-xs text-red-600 dark:text-red-300">
+                  Failed to load branches: {branches.error?.message}
+                </div>
               </Show>
             </Show>
           </div>
