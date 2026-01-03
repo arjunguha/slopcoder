@@ -1,7 +1,8 @@
-.PHONY: help build build-release build-frontend test test-core test-server test-frontend appimage clean
+.PHONY: help all build build-release build-frontend test test-core test-server test-frontend appimage clean
 
 help:
 	@echo "Targets:"
+	@echo "  all             Build server (release) and frontend"
 	@echo "  build           Build server (debug)"
 	@echo "  build-release   Build server (release)"
 	@echo "  build-frontend  Build frontend assets"
@@ -11,6 +12,8 @@ help:
 	@echo "  test-frontend   Build frontend (no tests)"
 	@echo "  appimage        Build AppImage package"
 	@echo "  clean           Clean Rust and frontend build outputs"
+
+all: build-release build-frontend
 
 build:
 	cargo build
