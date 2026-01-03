@@ -1,6 +1,7 @@
 //! HTTP routes for the Slopcoder API.
 
 use crate::state::{AppState, StateError};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use slopcoder_core::{
     agent::Agent,
@@ -8,6 +9,7 @@ use slopcoder_core::{
     CodexEvent,
 };
 use std::convert::Infallible;
+use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 use warp::{http::StatusCode, Filter, Reply};
@@ -166,6 +168,7 @@ struct TaskResponse {
     status: String,
     session_id: Option<String>,
     created_at: String,
+    worktree_date: Option<String>,
     history: Vec<PromptRunResponse>,
 }
 
@@ -187,6 +190,7 @@ impl From<&Task> for TaskResponse {
             status: format!("{:?}", task.status).to_lowercase(),
             session_id: task.session_id.map(|id| id.to_string()),
             created_at: task.created_at.to_rfc3339(),
+            worktree_date: worktree_date(task),
             history: task
                 .history
                 .iter()
@@ -199,6 +203,16 @@ impl From<&Task> for TaskResponse {
                 .collect(),
         }
     }
+}
+
+fn worktree_date(task: &Task) -> Option<String> {
+    let metadata = fs::metadata(&task.worktree_path).ok()?;
+    let timestamp = metadata
+        .created()
+        .or_else(|_| metadata.modified())
+        .ok()?;
+    let timestamp: DateTime<Utc> = timestamp.into();
+    Some(timestamp.date_naive().to_string())
 }
 
 async fn list_tasks(state: AppState) -> Result<impl Reply, Infallible> {

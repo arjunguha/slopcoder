@@ -28,8 +28,13 @@ function TaskCard(props: { task: Task }) {
       class="block p-4 bg-gray-100 dark:bg-gray-800 rounded-lg shadow hover:shadow-md transition-all border border-gray-200 dark:border-gray-700"
     >
       <div class="flex items-center justify-between mb-2">
-        <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">{props.task.feature_branch}</h3>
+        <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">
+          {props.task.environment}/{props.task.feature_branch}
+        </h3>
         <StatusBadge status={props.task.status} />
+      </div>
+      <div class="text-sm text-gray-600 dark:text-gray-300">
+        worktree date: {props.task.worktree_date ?? "unknown"}
       </div>
     </A>
   );
