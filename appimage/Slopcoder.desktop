@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Slopcoder
+Exec=slopcoder-server
+Icon=slopcoder
+Categories=Development;
+Terminal=true

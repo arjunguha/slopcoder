@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APPDIR="$(cd "$(dirname "$0")" && pwd)"
+STATIC_DIR="$APPDIR/usr/share/slopcoder/frontend/dist"
+
+exec "$APPDIR/usr/bin/slopcoder-server" "$@" --static-dir "$STATIC_DIR"
