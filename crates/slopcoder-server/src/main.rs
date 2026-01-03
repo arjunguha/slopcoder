@@ -66,7 +66,7 @@ environments:
     let state = match AppState::new(config_path.clone()).await {
         Ok(s) => s,
         Err(e) => {
-            tracing::error!("Failed to load config: {}", e);
+            tracing::error!("Startup checks failed: {}", e);
             std::process::exit(1);
         }
     };

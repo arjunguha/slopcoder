@@ -2,7 +2,7 @@
 
 use slopcoder_core::{
     agent::AgentConfig,
-    environment::EnvironmentConfig,
+    environment::{EnvironmentConfig, EnvironmentError},
     persistence::PersistentTaskStore,
     task::{Task, TaskId},
     CodexEvent, PersistenceError,
@@ -30,6 +30,22 @@ pub enum StateError {
     PersistenceError(#[from] PersistenceError),
 }
 
+/// Errors that can occur during startup validation.
+#[derive(Debug, Error)]
+pub enum StartupError {
+    #[error("Environment '{name}' failed validation: {source}")]
+    EnvironmentValidation {
+        name: String,
+        source: EnvironmentError,
+    },
+
+    #[error("Environment '{name}' failed to list branches: {source}")]
+    EnvironmentBranches {
+        name: String,
+        source: EnvironmentError,
+    },
+}
+
 /// Shared application state.
 #[derive(Clone)]
 pub struct AppState {
@@ -55,6 +71,22 @@ impl AppState {
     /// Loads existing tasks from environment directories.
     pub async fn new(config_path: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
         let config = EnvironmentConfig::load(&config_path).await?;
+
+        for env in &config.environments {
+            if let Err(err) = env.validate().await {
+                return Err(Box::new(StartupError::EnvironmentValidation {
+                    name: env.name.clone(),
+                    source: err,
+                }));
+            }
+
+            if let Err(err) = env.list_branches().await {
+                return Err(Box::new(StartupError::EnvironmentBranches {
+                    name: env.name.clone(),
+                    source: err,
+                }));
+            }
+        }
 
         // Create persistent store and register all environments
         let mut tasks = PersistentTaskStore::new();
