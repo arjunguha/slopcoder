@@ -1,6 +1,7 @@
 import { createSignal, createResource, For, Show } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import { listEnvironments, listBranches, createTask } from "../api/client";
+import type { AgentKind } from "../types";
 
 export default function NewTaskForm() {
   const navigate = useNavigate();
@@ -15,6 +16,7 @@ export default function NewTaskForm() {
   const [baseBranch, setBaseBranch] = createSignal("");
   const [featureBranch, setFeatureBranch] = createSignal("");
   const [prompt, setPrompt] = createSignal("");
+  const [agent, setAgent] = createSignal<AgentKind>("codex");
   const [submitting, setSubmitting] = createSignal(false);
   const [error, setError] = createSignal("");
 
@@ -29,6 +31,7 @@ export default function NewTaskForm() {
         base_branch: baseBranch(),
         feature_branch: featureBranch(),
         prompt: prompt(),
+        agent: agent(),
       });
       navigate(`/tasks/${result.id}`);
     } catch (err) {
@@ -127,6 +130,21 @@ export default function NewTaskForm() {
               class={inputClass}
             />
           </div>
+        </div>
+
+        {/* Agent */}
+        <div>
+          <label class="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Agent
+          </label>
+          <select
+            value={agent()}
+            onChange={(e) => setAgent(e.currentTarget.value as AgentKind)}
+            class={inputClass}
+          >
+            <option value="codex">Codex</option>
+            <option value="claude">Claude</option>
+          </select>
         </div>
 
         {/* Initial Prompt */}

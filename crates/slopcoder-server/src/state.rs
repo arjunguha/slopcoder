@@ -1,11 +1,11 @@
 //! Server state management.
 
 use slopcoder_core::{
-    agent::AgentConfig,
+    anyagent::AnyAgentConfig,
     environment::{EnvironmentConfig, EnvironmentError},
     persistence::PersistentTaskStore,
     task::{Task, TaskId},
-    CodexEvent, PersistenceError,
+    AgentEvent, PersistenceError,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -58,9 +58,9 @@ struct AppStateInner {
     /// Persistent task storage.
     tasks: PersistentTaskStore,
     /// Event broadcasters for each running task.
-    event_channels: HashMap<TaskId, broadcast::Sender<CodexEvent>>,
+    event_channels: HashMap<TaskId, broadcast::Sender<AgentEvent>>,
     /// Agent configuration.
-    agent_config: AgentConfig,
+    agent_config: AnyAgentConfig,
     /// Path to environments config file.
     #[allow(dead_code)]
     config_path: PathBuf,
@@ -107,7 +107,7 @@ impl AppState {
                 config,
                 tasks,
                 event_channels: HashMap::new(),
-                agent_config: AgentConfig::default(),
+                agent_config: AnyAgentConfig::default(),
                 config_path,
             })),
         })
@@ -126,7 +126,7 @@ impl AppState {
                 config,
                 tasks,
                 event_channels: HashMap::new(),
-                agent_config: AgentConfig::default(),
+                agent_config: AnyAgentConfig::default(),
                 config_path: PathBuf::new(),
             })),
         }
@@ -173,7 +173,7 @@ impl AppState {
     }
 
     /// Get the agent config.
-    pub async fn get_agent_config(&self) -> AgentConfig {
+    pub async fn get_agent_config(&self) -> AnyAgentConfig {
         self.inner.read().await.agent_config.clone()
     }
 
@@ -262,7 +262,7 @@ impl AppState {
     }
 
     /// Create an event broadcaster for a task.
-    pub async fn create_event_channel(&self, id: TaskId) -> broadcast::Sender<CodexEvent> {
+    pub async fn create_event_channel(&self, id: TaskId) -> broadcast::Sender<AgentEvent> {
         let (tx, _) = broadcast::channel(100);
         self.inner
             .write()
@@ -273,7 +273,7 @@ impl AppState {
     }
 
     /// Subscribe to events for a task.
-    pub async fn subscribe_to_task(&self, id: TaskId) -> Option<broadcast::Receiver<CodexEvent>> {
+    pub async fn subscribe_to_task(&self, id: TaskId) -> Option<broadcast::Receiver<AgentEvent>> {
         self.inner
             .read()
             .await
@@ -283,7 +283,7 @@ impl AppState {
     }
 
     /// Broadcast an event for a task.
-    pub async fn broadcast_event(&self, id: TaskId, event: CodexEvent) {
+    pub async fn broadcast_event(&self, id: TaskId, event: AgentEvent) {
         if let Some(tx) = self.inner.read().await.event_channels.get(&id) {
             let _ = tx.send(event);
         }

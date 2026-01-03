@@ -33,8 +33,8 @@ function TaskCard(props: { task: Task }) {
         </h3>
         <StatusBadge status={props.task.status} />
       </div>
-      <div class="text-sm text-gray-600 dark:text-gray-300">
-        worktree date: {props.task.worktree_date ?? "unknown"}
+      <div class="text-xs text-gray-500 dark:text-gray-400">
+        {props.task.agent} • worktree date: {props.task.worktree_date ?? "unknown"}
       </div>
     </A>
   );

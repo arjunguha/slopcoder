@@ -9,7 +9,7 @@ import {
 } from "solid-js";
 import { useParams, A } from "@solidjs/router";
 import { getTask, sendPrompt, subscribeToTask, getTaskOutput, getTaskDiff } from "../api/client";
-import type { Task, CodexEvent, CompletedItem } from "../types";
+import type { Task, AgentEvent, CompletedItem } from "../types";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 
@@ -144,12 +144,12 @@ function MarkdownBlock(props: { content?: string }) {
   return <div class="markdown" innerHTML={html()} />;
 }
 
-function EventDisplay(props: { event: CodexEvent }) {
+function EventDisplay(props: { event: AgentEvent }) {
   const e = props.event;
 
-  if (e.type === "thread.started") {
+  if (e.type === "session.started") {
     return (
-      <div class="text-xs text-gray-500 dark:text-gray-400">Session started: {e.thread_id}</div>
+      <div class="text-xs text-gray-500 dark:text-gray-400">Session started: {e.session_id}</div>
     );
   }
 
@@ -253,7 +253,7 @@ export default function TaskDetail() {
     () => params.id,
     async (id) => (await getTaskOutput(id)).events
   );
-  const [events, setEvents] = createSignal<CodexEvent[]>([]);
+  const [events, setEvents] = createSignal<AgentEvent[]>([]);
   const combinedEvents = createMemo(() => [
     ...(persistedOutput() || []),
     ...events(),
@@ -356,6 +356,8 @@ export default function TaskDetail() {
               <span>
                 base: {task()!.base_branch || "unknown"}
               </span>
+              <span class="mx-2">•</span>
+              <span>agent: {task()!.agent}</span>
               <span class="mx-2">•</span>
               <span>
                 feature: {task()!.feature_branch}

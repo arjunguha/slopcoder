@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
+use crate::anyagent::AgentKind;
 
 /// Unique identifier for a task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -83,6 +84,9 @@ impl PromptRun {
 pub struct Task {
     /// Unique task identifier.
     pub id: TaskId,
+    /// Which agent implementation this task uses.
+    #[serde(default)]
+    pub agent: AgentKind,
     /// Name of the environment this task belongs to.
     pub environment: String,
     /// Base branch this task was created from.
@@ -106,6 +110,7 @@ pub struct Task {
 impl Task {
     /// Create a new task.
     pub fn new(
+        agent: AgentKind,
         environment: String,
         base_branch: Option<String>,
         feature_branch: String,
@@ -113,6 +118,7 @@ impl Task {
     ) -> Self {
         Self {
             id: TaskId::new(),
+            agent,
             environment,
             base_branch,
             feature_branch,
@@ -215,6 +221,7 @@ mod tests {
     #[test]
     fn test_task_creation() {
         let task = Task::new(
+            AgentKind::Codex,
             "my-env".to_string(),
             Some("main".to_string()),
             "feature/test".to_string(),
@@ -232,6 +239,7 @@ mod tests {
     #[test]
     fn test_task_run_lifecycle() {
         let mut task = Task::new(
+            AgentKind::Codex,
             "env".to_string(),
             Some("main".to_string()),
             "feature/one".to_string(),
@@ -258,12 +266,14 @@ mod tests {
         let mut store = TaskStore::new();
 
         let task1 = Task::new(
+            AgentKind::Codex,
             "env1".to_string(),
             Some("main".to_string()),
             "feature/a".to_string(),
             PathBuf::from("/tmp/1"),
         );
         let task2 = Task::new(
+            AgentKind::Codex,
             "env2".to_string(),
             Some("main".to_string()),
             "feature/b".to_string(),
