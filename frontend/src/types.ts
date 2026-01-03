@@ -24,6 +24,7 @@ export interface Task {
   status: "pending" | "running" | "completed" | "failed";
   session_id: string | null;
   created_at: string;
+  worktree_date?: string | null;
   history: PromptRun[];
 }
 
