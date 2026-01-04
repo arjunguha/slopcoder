@@ -12,6 +12,14 @@ import { getTask, sendPrompt, subscribeToTask, getTaskOutput, getTaskDiff } from
 import type { Task, AgentEvent, CompletedItem } from "../types";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import {
+  parseJson,
+  summarizeOutput,
+  summarizeJsonShape,
+  clipText,
+  prettyPrintJsonString,
+  prettyPrintJsonValue,
+} from "../utils/messageFormatting";
 
 function StatusBadge(props: { status: Task["status"] }) {
   const colors = {
@@ -30,22 +38,6 @@ function StatusBadge(props: { status: Task["status"] }) {
   );
 }
 
-function parseJson(value?: string): unknown | null {
-  if (!value) return null;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
-}
-
-function renderPrettyJson(value?: string) {
-  if (!value) return value;
-  const parsed = parseJson(value);
-  if (parsed === null) return value;
-  return JSON.stringify(parsed, null, 2);
-}
-
 function formatToolCallArgs(value?: string) {
   const parsed = parseJson(value);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -62,6 +54,7 @@ function formatToolCallArgs(value?: string) {
       ([key]) => key !== "description" && key !== "command" && key !== "file_path" && key !== "url"
     )
   );
+  const remainingPretty = prettyPrintJsonValue(remaining);
 
   return (
     <div class="mt-1 text-xs text-gray-600 dark:text-gray-400">
@@ -87,9 +80,16 @@ function formatToolCallArgs(value?: string) {
         </div>
       )}
       {Object.keys(remaining).length > 0 && (
-        <pre class="mt-2 bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
-          {JSON.stringify(remaining, null, 2)}
-        </pre>
+        <div class="mt-2">
+          <pre class="bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
+            {remainingPretty.text}
+          </pre>
+          {remainingPretty.clipped && (
+            <div class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
+              Details truncated in log view.
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -99,40 +99,6 @@ function formatPath(path: string) {
   const parts = path.split(/[\\/]/).filter(Boolean);
   if (parts.length <= 2) return path;
   return parts.slice(parts.length - 2).join("/");
-}
-
-function summarizeOutput(output?: string) {
-  if (!output) return "No output";
-  const lines = output.split(/\r?\n/);
-  const lineCount = lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
-  const size = output.length;
-  return `${lineCount} line${lineCount === 1 ? "" : "s"}, ${size} char${size === 1 ? "" : "s"}`;
-}
-
-function clipText(value: string, maxLines: number, maxChars: number) {
-  const lines = value.split(/\r?\n/);
-  const limitedLines = lines.slice(0, maxLines);
-  let clipped = lines.length > maxLines;
-  let text = limitedLines.join("\n");
-  if (text.length > maxChars) {
-    text = text.slice(0, maxChars);
-    clipped = true;
-  }
-  return { text, clipped };
-}
-
-function summarizeJsonShape(value?: string) {
-  const parsed = parseJson(value);
-  if (parsed === null) return null;
-  if (Array.isArray(parsed)) {
-    return `JSON array (${parsed.length} item${parsed.length === 1 ? "" : "s"})`;
-  }
-  if (parsed && typeof parsed === "object") {
-    const keys = Object.keys(parsed);
-    const preview = keys.slice(0, 4).join(", ");
-    return `JSON object (${keys.length} key${keys.length === 1 ? "" : "s"}${preview ? `: ${preview}` : ""})`;
-  }
-  return `JSON ${typeof parsed}`;
 }
 
 function CommandExecutionSummary(props: { item: CompletedItem }) {
@@ -208,6 +174,7 @@ function ToolOutputSummary(props: { item: CompletedItem }) {
       )
     );
   const remainingKeys = remaining ? Object.keys(remaining) : [];
+  const remainingPretty = remaining ? prettyPrintJsonValue(remaining) : null;
   const outputForSummary = stdout || stderr || output;
   const jsonShape = summarizeJsonShape(output);
   const summary = summarizeOutput(outputForSummary || "");
@@ -216,6 +183,11 @@ function ToolOutputSummary(props: { item: CompletedItem }) {
     jsonShape,
     summary,
   ].filter(Boolean);
+  const parsedPretty = parsed !== null ? prettyPrintJsonValue(parsed) : null;
+  const parsedIsTrivial =
+    parsed !== null &&
+    ((Array.isArray(parsed) && parsed.length === 0) ||
+      (parsed && typeof parsed === "object" && !Array.isArray(parsed) && Object.keys(parsed).length === 0));
   const stdoutPreview = stdout ? clipText(stdout, 12, 800) : null;
   const stderrPreview = stderr ? clipText(stderr, 12, 800) : null;
   const outputPreview = output ? clipText(output, 12, 800) : null;
@@ -258,15 +230,25 @@ function ToolOutputSummary(props: { item: CompletedItem }) {
             details
           </div>
           <pre class="text-xs bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
-            {JSON.stringify(remaining, null, 2)}
+            {remainingPretty?.text}
           </pre>
+          {remainingPretty?.clipped && (
+            <div class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
+              Details truncated in log view.
+            </div>
+          )}
         </div>
       )}
-      {!stdout && !stderr && remainingKeys.length === 0 && parsed !== null && (
+      {!stdout && !stderr && remainingKeys.length === 0 && parsed !== null && !parsedIsTrivial && (
         <div class="mt-2">
           <pre class="text-xs bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
-            {JSON.stringify(parsed, null, 2)}
+            {parsedPretty?.text}
           </pre>
+          {parsedPretty?.clipped && (
+            <div class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
+              Output truncated in log view.
+            </div>
+          )}
         </div>
       )}
       {!stdout && !stderr && remainingKeys.length === 0 && parsed === null && output && (
@@ -337,6 +319,13 @@ function EventDisplay(props: { event: AgentEvent }) {
     );
   }
 
+  if (e.type === "background_event") {
+    if (!e.event) return null;
+    return (
+      <div class="text-xs text-gray-500 dark:text-gray-400">Background: {e.event}</div>
+    );
+  }
+
   return null;
 }
 
@@ -363,6 +352,8 @@ function ItemDisplay(props: { item: CompletedItem }) {
 
   if (item.type === "tool_call") {
     const formattedArgs = formatToolCallArgs(item.arguments);
+    const argsPretty = prettyPrintJsonString(item.arguments);
+    const argsPreview = item.arguments ? clipText(item.arguments, 12, 800) : null;
     return (
       <div class="text-yellow-700 dark:text-yellow-400 text-sm py-1">
         <div class="font-medium">
@@ -371,9 +362,16 @@ function ItemDisplay(props: { item: CompletedItem }) {
         </div>
         {formattedArgs}
         {!formattedArgs && item.arguments && (
-          <pre class="text-xs text-gray-600 dark:text-gray-400 mt-1 overflow-x-auto">
-            {renderPrettyJson(item.arguments)}
-          </pre>
+          <div class="mt-1">
+            <pre class="text-xs text-gray-600 dark:text-gray-400 overflow-x-auto whitespace-pre-wrap">
+              {argsPretty ? argsPretty.text : argsPreview?.text}
+            </pre>
+            {(argsPretty?.clipped || argsPreview?.clipped) && (
+              <div class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
+                Arguments truncated in log view.
+              </div>
+            )}
+          </div>
         )}
       </div>
     );
@@ -382,6 +380,57 @@ function ItemDisplay(props: { item: CompletedItem }) {
   if (item.type === "tool_output") {
     return (
       <ToolOutputSummary item={item} />
+    );
+  }
+
+  if (item.type === "text") {
+    const output = item.output || item.text || "";
+    const outputPretty = prettyPrintJsonString(output);
+    const outputPreview = output ? clipText(output, 12, 800) : null;
+    return (
+      <div class="text-sm text-gray-700 dark:text-gray-300 py-1">
+        <div class="font-medium text-gray-900 dark:text-gray-100">Text output</div>
+        {output && (
+          <div class="text-xs text-gray-500 dark:text-gray-400">
+            Output: {summarizeOutput(output)}
+          </div>
+        )}
+        {output && (
+          <div class="mt-2">
+            <pre class="text-xs bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
+              {outputPretty ? outputPretty.text : outputPreview?.text}
+            </pre>
+            {(outputPretty?.clipped || outputPreview?.clipped) && (
+              <div class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
+                Output truncated in log view.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (item.type === "todo_list") {
+    const todos = (item as CompletedItem & { items?: Array<{ completed?: boolean; text?: string }> })
+      .items;
+    if (!todos || todos.length === 0) {
+      return null;
+    }
+    return (
+      <div class="text-sm text-gray-700 dark:text-gray-300 py-1">
+        <div class="font-medium text-gray-900 dark:text-gray-100">Todo list</div>
+        <div class="mt-1 space-y-1 text-xs text-gray-600 dark:text-gray-400">
+          <For each={todos}>
+            {(todo) => (
+              <div>
+                <span class="font-mono mr-2">{todo.completed ? "[x]" : "[ ]"}</span>
+                <span>{todo.text}</span>
+              </div>
+            )}
+          </For>
+        </div>
+      </div>
     );
   }
 
