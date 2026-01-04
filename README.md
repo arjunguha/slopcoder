@@ -6,7 +6,7 @@ access to agents, without the headache of configuring isolated environments on
 third-party infrastructure.
 
 
-![Screenshot](slopcoder.jpg)
+<img src="slopcoder.jpg" alt="Screenshot" width="50%" />
 
 ## Building from Source
 
@@ -177,6 +177,5 @@ And these were the followups:
 11. So I just ran git worktree remove -f ../main in the MultiPL-E/bare
     directory from the CLI. But, when I reload the running server, the task
     still appears. In this situation, you should rebuild tasks.yaml
-
 
 
