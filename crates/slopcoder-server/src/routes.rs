@@ -149,6 +149,11 @@ fn tasks_routes(
         .and(with_state(state.clone()))
         .and_then(get_task_diff);
 
+    let interrupt = warp::path!(String / "interrupt")
+        .and(warp::post())
+        .and(with_state(state.clone()))
+        .and_then(interrupt_task);
+
     let stream = warp::path!(String / "stream")
         .and(warp::ws())
         .and(with_state(state.clone()))
@@ -156,7 +161,7 @@ fn tasks_routes(
             ws.on_upgrade(move |socket| handle_websocket(socket, id, state))
         });
 
-    list.or(create).or(get).or(prompt).or(output).or(diff).or(stream)
+    list.or(create).or(get).or(prompt).or(output).or(diff).or(interrupt).or(stream)
 }
 
 #[derive(Serialize)]
@@ -469,6 +474,34 @@ async fn get_task_output(id: String, state: AppState) -> Result<impl Reply, Infa
     ))
 }
 
+async fn interrupt_task(id: String, state: AppState) -> Result<impl Reply, Infallible> {
+    let Ok(uuid) = Uuid::parse_str(&id) else {
+        return Ok(warp::reply::with_status(
+            warp::reply::json(&ErrorResponse {
+                error: "Invalid task ID".to_string(),
+            }),
+            StatusCode::BAD_REQUEST,
+        ));
+    };
+
+    let task_id = TaskId(uuid);
+
+    // Send the interrupt signal
+    if state.send_interrupt(task_id).await {
+        Ok(warp::reply::with_status(
+            warp::reply::json(&serde_json::json!({"status": "interrupted"})),
+            StatusCode::OK,
+        ))
+    } else {
+        Ok(warp::reply::with_status(
+            warp::reply::json(&ErrorResponse {
+                error: "Task is not running or interrupt channel not found".to_string(),
+            }),
+            StatusCode::CONFLICT,
+        ))
+    }
+}
+
 async fn get_task_diff(id: String, state: AppState) -> Result<impl Reply, Infallible> {
     let Ok(uuid) = Uuid::parse_str(&id) else {
         return Ok(warp::reply::with_status(
@@ -557,8 +590,9 @@ async fn run_agent(state: AppState, task_id: TaskId, prompt: String, session_id:
         return;
     }
 
-    // Create event channel for this task
+    // Create event channel and interrupt receiver for this task
     let _event_tx = state.create_event_channel(task_id).await;
+    let mut interrupt_rx = state.register_interrupt_channel(task_id).await;
 
     let agent_config = state.get_agent_config().await;
 
@@ -594,57 +628,84 @@ async fn run_agent(state: AppState, task_id: TaskId, prompt: String, session_id:
         }
     };
 
-    // Stream events
-    while let Some(result) = agent.next_event().await {
-        match result {
-            Ok(event) => {
-                // Update session ID if we got it
-                if let Some(sid) = event.session_id() {
-                    if let Err(e) = state.set_task_session_id(task_id, sid).await {
-                        tracing::warn!("Failed to save session ID: {}", e);
-                    }
-                }
-                if let Some(file) = output_file.as_mut() {
-                    match serde_json::to_string(&event) {
-                        Ok(line) => {
-                            if file.write_all(line.as_bytes()).await.is_err()
-                                || file.write_all(b"\n").await.is_err()
-                            {
-                                tracing::warn!("Failed to write output log for {}", task_id);
-                                output_file = None;
+    // Stream events and listen for interrupts
+    let mut interrupted = false;
+    loop {
+        tokio::select! {
+            result = agent.next_event() => {
+                match result {
+                    Some(Ok(event)) => {
+                        // Update session ID if we got it
+                        if let Some(sid) = event.session_id() {
+                            if let Err(e) = state.set_task_session_id(task_id, sid).await {
+                                tracing::warn!("Failed to save session ID: {}", e);
                             }
                         }
-                        Err(e) => {
-                            tracing::warn!("Failed to serialize event for {}: {}", task_id, e);
+                        if let Some(file) = output_file.as_mut() {
+                            match serde_json::to_string(&event) {
+                                Ok(line) => {
+                                    if file.write_all(line.as_bytes()).await.is_err()
+                                        || file.write_all(b"\n").await.is_err()
+                                    {
+                                        tracing::warn!("Failed to write output log for {}", task_id);
+                                        output_file = None;
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Failed to serialize event for {}: {}", task_id, e);
+                                }
+                            }
                         }
+                        // Broadcast to WebSocket clients
+                        state.broadcast_event(task_id, event).await;
+                    }
+                    Some(Err(e)) => {
+                        tracing::warn!("Error reading event: {}", e);
+                    }
+                    None => {
+                        // Agent finished normally
+                        break;
                     }
                 }
-                // Broadcast to WebSocket clients
-                state.broadcast_event(task_id, event).await;
             }
-            Err(e) => {
-                tracing::warn!("Error reading event: {}", e);
+            _ = &mut interrupt_rx => {
+                // Interrupt received
+                tracing::info!("Task {} interrupted by user", task_id);
+                interrupted = true;
+                if let Err(e) = agent.kill().await {
+                    tracing::warn!("Failed to kill agent for task {}: {}", task_id, e);
+                }
+                break;
             }
         }
     }
 
-    // Wait for completion
-    let result = agent.wait().await;
-    let success = match &result {
-        Ok(r) => {
-            // Update session ID from result
-            if let Err(e) = state.set_task_session_id(task_id, r.session_id).await {
-                tracing::warn!("Failed to save session ID: {}", e);
-            }
-            r.success
+    // Handle completion or interruption
+    if interrupted {
+        // Task was interrupted
+        if let Err(e) = state.interrupt_task_run(task_id).await {
+            tracing::warn!("Failed to save task interruption: {}", e);
         }
-        Err(_) => false,
-    };
+        tracing::info!("Task {} interrupted", task_id);
+    } else {
+        // Wait for normal completion
+        let result = agent.wait().await;
+        let success = match &result {
+            Ok(r) => {
+                // Update session ID from result
+                if let Err(e) = state.set_task_session_id(task_id, r.session_id).await {
+                    tracing::warn!("Failed to save session ID: {}", e);
+                }
+                r.success
+            }
+            Err(_) => false,
+        };
 
-    if let Err(e) = state.complete_task_run(task_id, success).await {
-        tracing::warn!("Failed to save task completion: {}", e);
+        if let Err(e) = state.complete_task_run(task_id, success).await {
+            tracing::warn!("Failed to save task completion: {}", e);
+        }
+        tracing::info!("Task {} completed with success={}", task_id, success);
     }
-    tracing::info!("Task {} completed with success={}", task_id, success);
 }
 
 // ============================================================================

@@ -45,6 +45,8 @@ pub enum TaskStatus {
     Completed,
     /// Agent failed with an error.
     Failed,
+    /// Agent was interrupted by the user.
+    Interrupted,
 }
 
 /// A single prompt and its result in the task history.
@@ -134,7 +136,7 @@ impl Task {
     pub fn can_run(&self) -> bool {
         matches!(
             self.status,
-            TaskStatus::Pending | TaskStatus::Completed | TaskStatus::Failed
+            TaskStatus::Pending | TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Interrupted
         )
     }
 
@@ -159,6 +161,14 @@ impl Task {
         } else {
             TaskStatus::Failed
         };
+    }
+
+    /// Mark the current run as interrupted.
+    pub fn interrupt_run(&mut self) {
+        if let Some(run) = self.history.last_mut() {
+            run.finish(false);
+        }
+        self.status = TaskStatus::Interrupted;
     }
 
     /// Get the last prompt that was run.
@@ -291,5 +301,89 @@ mod tests {
         assert!(store.get(id2).is_some());
 
         assert_eq!(store.list_by_environment("env1").len(), 1);
+    }
+
+    #[test]
+    fn test_task_interrupt() {
+        let mut task = Task::new(
+            AgentKind::Codex,
+            "env".to_string(),
+            Some("main".to_string()),
+            "feature/test".to_string(),
+            PathBuf::from("/tmp"),
+        );
+
+        // Start a run
+        task.start_run("Test prompt".to_string());
+        assert!(task.is_running());
+        assert!(!task.can_run());
+
+        // Interrupt the run
+        task.interrupt_run();
+        assert_eq!(task.status, TaskStatus::Interrupted);
+        assert!(task.can_run());
+        assert!(!task.is_running());
+        assert_eq!(task.history.len(), 1);
+        assert_eq!(task.history[0].success, Some(false));
+    }
+
+    #[test]
+    fn test_task_resume_after_interrupt() {
+        let mut task = Task::new(
+            AgentKind::Codex,
+            "env".to_string(),
+            Some("main".to_string()),
+            "feature/test".to_string(),
+            PathBuf::from("/tmp"),
+        );
+
+        // First run - interrupted
+        task.start_run("First prompt".to_string());
+        task.interrupt_run();
+        assert_eq!(task.status, TaskStatus::Interrupted);
+        assert!(task.can_run());
+
+        // Resume with new prompt
+        task.start_run("Second prompt".to_string());
+        assert!(task.is_running());
+        assert_eq!(task.history.len(), 2);
+
+        // Complete successfully
+        task.complete_run(true);
+        assert_eq!(task.status, TaskStatus::Completed);
+        assert_eq!(task.history.len(), 2);
+        assert_eq!(task.history[0].success, Some(false));
+        assert_eq!(task.history[1].success, Some(true));
+    }
+
+    #[test]
+    fn test_task_double_interrupt() {
+        let mut task = Task::new(
+            AgentKind::Codex,
+            "env".to_string(),
+            Some("main".to_string()),
+            "feature/test".to_string(),
+            PathBuf::from("/tmp"),
+        );
+
+        // First run - interrupted
+        task.start_run("First prompt".to_string());
+        task.interrupt_run();
+        assert_eq!(task.status, TaskStatus::Interrupted);
+
+        // Second run - interrupted again
+        task.start_run("Second prompt".to_string());
+        task.interrupt_run();
+        assert_eq!(task.status, TaskStatus::Interrupted);
+
+        // Third run - complete successfully
+        task.start_run("Third prompt".to_string());
+        task.complete_run(true);
+        assert_eq!(task.status, TaskStatus::Completed);
+
+        assert_eq!(task.history.len(), 3);
+        assert_eq!(task.history[0].success, Some(false));
+        assert_eq!(task.history[1].success, Some(false));
+        assert_eq!(task.history[2].success, Some(true));
     }
 }

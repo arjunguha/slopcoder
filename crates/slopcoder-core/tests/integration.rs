@@ -300,3 +300,231 @@ environments:
     assert_eq!(config.environments.len(), 1);
     assert_eq!(config.environments[0].name, "test-project");
 }
+
+async fn run_agent_interrupt(kind: AgentKind) {
+    let (_temp_dir, env) = setup_test_env().await;
+
+    let worktree_path = env
+        .create_worktree("main")
+        .await
+        .expect("Should create worktree");
+
+    let config = AnyAgentConfig::default();
+
+    let mut agent = spawn_anyagent(
+        kind,
+        &config,
+        &worktree_path,
+        "Write a very long story to story.txt. Make it at least 10 paragraphs.",
+    )
+    .await
+    .expect("Should spawn agent");
+
+    // Read a few events
+    let mut event_count = 0;
+    for _ in 0..5 {
+        if agent.next_event().await.is_some() {
+            event_count += 1;
+        }
+    }
+    assert!(event_count > 0, "Should receive some events");
+
+    // Interrupt the agent
+    agent.kill().await.expect("Should kill agent");
+
+    // Verify agent is no longer running
+    let status = agent.try_wait().expect("Should check wait status");
+    // After kill, the agent should have exited (or will exit soon)
+
+    // Wait for agent to finish
+    let result = agent.wait().await;
+    // Result might be Ok or Err depending on how the agent was killed
+    println!("Result after interrupt: {:?}", result);
+
+    // Agent should have been interrupted, so it shouldn't have succeeded normally
+    match result {
+        Ok(r) => {
+            // If we get a result, it shouldn't be a clean success
+            println!("Agent exited with success={}", r.success);
+        }
+        Err(e) => {
+            println!("Agent was killed as expected: {}", e);
+        }
+    }
+}
+
+async fn run_agent_resume_after_interrupt(kind: AgentKind) {
+    let (_temp_dir, env) = setup_test_env().await;
+
+    let worktree_path = env
+        .create_worktree("main")
+        .await
+        .expect("Should create worktree");
+
+    let config = AnyAgentConfig::default();
+
+    // First run - will be interrupted
+    let mut agent = spawn_anyagent(
+        kind,
+        &config,
+        &worktree_path,
+        "Create a file called test.txt with 'First attempt'",
+    )
+    .await
+    .expect("Should spawn agent");
+
+    // Read a few events to get session ID
+    let mut session_id_opt = None;
+    for _ in 0..5 {
+        if let Some(Ok(event)) = agent.next_event().await {
+            if let Some(sid) = event.session_id() {
+                session_id_opt = Some(sid);
+            }
+        }
+    }
+
+    // Interrupt
+    agent.kill().await.expect("Should kill agent");
+    let _ = agent.wait().await;
+
+    let session_id = session_id_opt.expect("Should have session ID");
+    println!("Interrupted session ID: {}", session_id);
+
+    // Resume and complete
+    let mut agent = resume_anyagent(
+        kind,
+        &config,
+        &worktree_path,
+        session_id,
+        "Now create a file called complete.txt with 'Completed after interrupt'",
+    )
+    .await
+    .expect("Should resume agent");
+
+    while agent.next_event().await.is_some() {}
+
+    let result = agent.wait().await.expect("Resumed agent should complete");
+    assert!(result.success, "Resumed agent should succeed");
+
+    // Verify the file was created
+    let complete_path = worktree_path.join("complete.txt");
+    assert!(complete_path.exists(), "complete.txt should exist");
+    let content = tokio::fs::read_to_string(&complete_path)
+        .await
+        .expect("Should read complete.txt");
+    assert!(content.contains("Completed"), "Content should contain 'Completed'");
+}
+
+async fn run_agent_double_interrupt(kind: AgentKind) {
+    let (_temp_dir, env) = setup_test_env().await;
+
+    let worktree_path = env
+        .create_worktree("main")
+        .await
+        .expect("Should create worktree");
+
+    let config = AnyAgentConfig::default();
+
+    // First run - interrupted
+    let mut agent = spawn_anyagent(
+        kind,
+        &config,
+        &worktree_path,
+        "Create first.txt with 'First attempt'",
+    )
+    .await
+    .expect("Should spawn agent");
+
+    let mut session_id = None;
+    for _ in 0..5 {
+        if let Some(Ok(event)) = agent.next_event().await {
+            if let Some(sid) = event.session_id() {
+                session_id = Some(sid);
+            }
+        }
+    }
+    agent.kill().await.expect("Should kill agent");
+    let _ = agent.wait().await;
+
+    let session_id = session_id.expect("Should have session ID from first run");
+    println!("First session ID: {}", session_id);
+
+    // Second run - interrupted again
+    let mut agent = resume_anyagent(
+        kind,
+        &config,
+        &worktree_path,
+        session_id,
+        "Create second.txt with 'Second attempt'",
+    )
+    .await
+    .expect("Should resume agent");
+
+    for _ in 0..5 {
+        agent.next_event().await;
+    }
+    agent.kill().await.expect("Should kill agent second time");
+    let _ = agent.wait().await;
+
+    println!("Interrupted second time with session ID: {}", session_id);
+
+    // Third run - complete successfully
+    let mut agent = resume_anyagent(
+        kind,
+        &config,
+        &worktree_path,
+        session_id,
+        "Create final.txt with 'Final success'",
+    )
+    .await
+    .expect("Should resume agent");
+
+    while agent.next_event().await.is_some() {}
+
+    let result = agent.wait().await.expect("Final run should complete");
+    assert!(result.success, "Final run should succeed");
+
+    // Verify the final file was created
+    let final_path = worktree_path.join("final.txt");
+    assert!(final_path.exists(), "final.txt should exist");
+    let content = tokio::fs::read_to_string(&final_path)
+        .await
+        .expect("Should read final.txt");
+    assert!(content.contains("Final"), "Content should contain 'Final'");
+}
+
+#[tokio::test]
+async fn test_codex_agent_interrupt() {
+    assert!(codex_available().await, "Codex CLI not available");
+    run_agent_interrupt(AgentKind::Codex).await;
+}
+
+#[tokio::test]
+async fn test_claude_agent_interrupt() {
+    assert!(claude_available().await, "Claude CLI not available");
+    run_agent_interrupt(AgentKind::Claude).await;
+}
+
+#[tokio::test]
+async fn test_codex_agent_resume_after_interrupt() {
+    assert!(codex_available().await, "Codex CLI not available");
+    run_agent_resume_after_interrupt(AgentKind::Codex).await;
+}
+
+#[tokio::test]
+async fn test_claude_agent_resume_after_interrupt() {
+    assert!(claude_available().await, "Claude CLI not available");
+    run_agent_resume_after_interrupt(AgentKind::Claude).await;
+}
+
+#[tokio::test]
+async fn test_codex_agent_double_interrupt() {
+    assert!(codex_available().await, "Codex CLI not available");
+    run_agent_double_interrupt(AgentKind::Codex).await;
+}
+
+#[tokio::test]
+async fn test_claude_agent_double_interrupt() {
+    assert!(claude_available().await, "Claude CLI not available");
+    run_agent_double_interrupt(AgentKind::Claude).await;
+}

@@ -59,6 +59,8 @@ struct AppStateInner {
     tasks: PersistentTaskStore,
     /// Event broadcasters for each running task.
     event_channels: HashMap<TaskId, broadcast::Sender<AgentEvent>>,
+    /// Interrupt senders for each running task.
+    interrupt_channels: HashMap<TaskId, tokio::sync::oneshot::Sender<()>>,
     /// Agent configuration.
     agent_config: AnyAgentConfig,
     /// Path to environments config file.
@@ -107,6 +109,7 @@ impl AppState {
                 config,
                 tasks,
                 event_channels: HashMap::new(),
+                interrupt_channels: HashMap::new(),
                 agent_config: AnyAgentConfig::default(),
                 config_path,
             })),
@@ -126,6 +129,7 @@ impl AppState {
                 config,
                 tasks,
                 event_channels: HashMap::new(),
+                interrupt_channels: HashMap::new(),
                 agent_config: AnyAgentConfig::default(),
                 config_path: PathBuf::new(),
             })),
@@ -256,9 +260,44 @@ impl AppState {
             task.complete_run(success);
             inner.tasks.save_task(id).await?;
         }
-        // Clean up the event channel
+        // Clean up the channels
         inner.event_channels.remove(&id);
+        inner.interrupt_channels.remove(&id);
         Ok(())
+    }
+
+    /// Interrupt a task run (persists to disk).
+    pub async fn interrupt_task_run(&self, id: TaskId) -> Result<(), StateError> {
+        let mut inner = self.inner.write().await;
+        if let Some(task) = inner.tasks.get_mut(id) {
+            if !task.is_running() {
+                return Err(StateError::TaskNotReady);
+            }
+            task.interrupt_run();
+            inner.tasks.save_task(id).await?;
+        } else {
+            return Err(StateError::TaskNotFound(id));
+        }
+        // Clean up channels
+        inner.event_channels.remove(&id);
+        inner.interrupt_channels.remove(&id);
+        Ok(())
+    }
+
+    /// Register an interrupt channel for a task. Returns a receiver to listen for interrupts.
+    pub async fn register_interrupt_channel(&self, id: TaskId) -> tokio::sync::oneshot::Receiver<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.inner.write().await.interrupt_channels.insert(id, tx);
+        rx
+    }
+
+    /// Send an interrupt signal to a task.
+    pub async fn send_interrupt(&self, id: TaskId) -> bool {
+        if let Some(tx) = self.inner.write().await.interrupt_channels.remove(&id) {
+            tx.send(()).is_ok()
+        } else {
+            false
+        }
     }
 
     /// Create an event broadcaster for a task.
