@@ -515,12 +515,13 @@ export default function TaskDetail() {
     e.preventDefault();
     if (!newPrompt().trim() || sending()) return;
 
+    const promptText = newPrompt();
     setError("");
     setSending(true);
-    setEvents([]); // Clear old events
+    setEvents([{ type: "prompt.sent", prompt: promptText }]);
 
     try {
-      await sendPrompt(params.id!, { prompt: newPrompt() });
+      await sendPrompt(params.id!, { prompt: promptText });
       setNewPrompt("");
       refetch();
     } catch (err) {
