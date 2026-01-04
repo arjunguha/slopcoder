@@ -393,6 +393,7 @@ export default function TaskDetail() {
   const [error, setError] = createSignal("");
 
   let outputRef: HTMLDivElement | undefined;
+  let formRef: HTMLFormElement | undefined;
 
   // Subscribe to WebSocket when task is running
   createEffect(() => {
@@ -446,6 +447,16 @@ export default function TaskDetail() {
       setError(err instanceof Error ? err.message : "Failed to send prompt");
     } finally {
       setSending(false);
+    }
+  };
+
+  const handlePromptKeyDown = (e: KeyboardEvent) => {
+    if (e.key !== "Enter" || !e.ctrlKey) return;
+    e.preventDefault();
+    if (formRef?.requestSubmit) {
+      formRef.requestSubmit();
+    } else {
+      handleSendPrompt(new Event("submit"));
     }
   };
 
@@ -528,14 +539,15 @@ export default function TaskDetail() {
                 </div>
               </Show>
 
-              <form onSubmit={handleSendPrompt} class="flex gap-2 mt-4">
-                <input
-                  type="text"
+              <form ref={formRef} onSubmit={handleSendPrompt} class="flex gap-2 mt-4">
+                <textarea
                   value={newPrompt()}
                   onInput={(e) => setNewPrompt(e.currentTarget.value)}
-                  placeholder="Send a follow-up prompt..."
+                  onKeyDown={handlePromptKeyDown}
+                  placeholder="Send a follow-up prompt... (Ctrl+Enter to send)"
+                  rows={3}
                   class="flex-1 px-4 py-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
+                ></textarea>
                 <button
                   type="submit"
                   disabled={!newPrompt().trim() || sending()}
