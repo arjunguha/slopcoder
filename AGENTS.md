@@ -1,3 +1,4 @@
 - Ensure you run tests after you conclude all tasks.
 - Don't ever make any tests optional.
 - If you successfully implement a requested feature, commit it.
+- When updating GitHub Actions for a self-hosted runner, assume system dependencies and toolchains are installed.
