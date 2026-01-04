@@ -59,18 +59,18 @@ impl TasksFile {
         Ok(())
     }
 
-    /// Validate worktrees exist, removing completed tasks whose worktrees are gone.
+    /// Validate worktrees exist, removing tasks whose worktrees are gone.
     /// Returns the list of task IDs that were removed.
     pub fn validate_worktrees(&mut self) -> Vec<TaskId> {
         let mut removed = Vec::new();
 
         self.tasks.retain(|task| {
-            if task.worktree_path.exists() || task.status != TaskStatus::Completed {
-                true
-            } else {
-                removed.push(task.id);
-                false
+            if task.worktree_path.exists() {
+                return true;
             }
+
+            removed.push(task.id);
+            false
         });
 
         removed
@@ -240,14 +240,14 @@ impl PersistentTaskStore {
         }
     }
 
-    /// Validate all worktrees and remove completed tasks whose worktrees no longer exist.
+    /// Validate all worktrees and remove tasks whose worktrees no longer exist.
     /// Returns the number of tasks removed.
     pub async fn cleanup_stale_tasks(&mut self) -> Result<usize, PersistenceError> {
-        // Find completed tasks with missing worktrees
+        // Find tasks with missing worktrees
         let stale_tasks: Vec<(TaskId, String)> = self
             .tasks
             .values()
-            .filter(|t| t.status == TaskStatus::Completed && !t.worktree_path.exists())
+            .filter(|t| !t.worktree_path.exists())
             .map(|t| (t.id, t.environment.clone()))
             .collect();
 
@@ -257,7 +257,7 @@ impl PersistentTaskStore {
 
         let count = stale_tasks.len();
         tracing::info!(
-            "Cleaning up {} completed tasks with missing worktrees",
+            "Cleaning up {} tasks with missing worktrees",
             count
         );
 
@@ -647,5 +647,37 @@ mod tests {
         let file = TasksFile::load(&path).await.unwrap();
         assert_eq!(file.tasks.len(), 1);
         assert_eq!(file.tasks[0].id, id2);
+    }
+
+    /// Test cleanup_stale_tasks removes missing worktrees for non-completed tasks
+    #[tokio::test]
+    async fn test_cleanup_stale_tasks_non_completed() {
+        let temp_dir = TempDir::new().unwrap();
+        let worktree1 = temp_dir.path().join("main");
+        let worktree2 = temp_dir.path().join("feature");
+        tokio::fs::create_dir(&worktree1).await.unwrap();
+        tokio::fs::create_dir(&worktree2).await.unwrap();
+
+        let mut store = PersistentTaskStore::new();
+        store.register_environment("project".to_string(), temp_dir.path().to_path_buf());
+
+        let mut task1 = create_test_task("project", Some("main"), "feature/a", worktree1.clone());
+        task1.status = TaskStatus::Running;
+        let task2 = create_test_task("project", Some("main"), "feature/b", worktree2.clone());
+        let id1 = task1.id;
+        let id2 = task2.id;
+
+        store.insert(task1).await.unwrap();
+        store.insert(task2).await.unwrap();
+
+        // Delete one worktree (simulating `git worktree remove`)
+        tokio::fs::remove_dir_all(&worktree1).await.unwrap();
+
+        // Cleanup should remove the missing task even if it wasn't completed
+        let removed = store.cleanup_stale_tasks().await.unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(store.list().len(), 1);
+        assert!(store.get(id1).is_none());
+        assert!(store.get(id2).is_some());
     }
 }
