@@ -21,6 +21,7 @@ async fn main() {
     let mut config_path: Option<PathBuf> = None;
     let mut addr_arg: Option<String> = None;
     let mut static_dir_arg: Option<PathBuf> = None;
+    let mut branch_model = "claude-haiku-4-5".to_string();
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -30,10 +31,15 @@ async fn main() {
             "--static-dir" | "--assets" => {
                 static_dir_arg = args.next().map(PathBuf::from);
             }
+            "--branch-model" => {
+                if let Some(value) = args.next() {
+                    branch_model = value;
+                }
+            }
             "-h" | "--help" => {
                 println!(
-                    "Usage: slopcoder-server [config.yaml] [--addr HOST:PORT] [--static-dir PATH]\n\
-Defaults: config=environments.yaml, addr=127.0.0.1:8080, static-dir=frontend/dist"
+                    "Usage: slopcoder-server [config.yaml] [--addr HOST:PORT] [--static-dir PATH] [--branch-model MODEL]\n\
+Defaults: config=environments.yaml, addr=127.0.0.1:8080, static-dir=frontend/dist, branch-model=claude-haiku-4-5"
                 );
                 return;
             }
@@ -46,6 +52,19 @@ Defaults: config=environments.yaml, addr=127.0.0.1:8080, static-dir=frontend/dis
     }
 
     let config_path = config_path.unwrap_or_else(|| PathBuf::from("environments.yaml"));
+
+    let api_key = std::env::var("OPENAI_API_KEY")
+        .ok()
+        .and_then(|v| if v.trim().is_empty() { None } else { Some(v) });
+    if api_key.is_none() {
+        tracing::warn!("OPENAI_API_KEY is not set; automatic branch naming will be unavailable.");
+    }
+    let api_base = std::env::var("OPENAI_API_BASE")
+        .ok()
+        .and_then(|v| if v.trim().is_empty() { None } else { Some(v) });
+    if api_base.is_none() {
+        tracing::warn!("OPENAI_API_BASE is not set; using the default OpenAI base URL.");
+    }
 
     // Check if config exists
     if !config_path.exists() {
@@ -63,7 +82,7 @@ environments:
     }
 
     // Load state
-    let state = match AppState::new(config_path.clone()).await {
+    let state = match AppState::new(config_path.clone(), branch_model).await {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("Startup checks failed: {}", e);

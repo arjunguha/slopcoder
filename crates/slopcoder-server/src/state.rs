@@ -63,6 +63,8 @@ struct AppStateInner {
     interrupt_channels: HashMap<TaskId, tokio::sync::oneshot::Sender<()>>,
     /// Agent configuration.
     agent_config: AnyAgentConfig,
+    /// Model name for feature branch generation.
+    branch_model: String,
     /// Path to environments config file.
     #[allow(dead_code)]
     config_path: PathBuf,
@@ -71,7 +73,10 @@ struct AppStateInner {
 impl AppState {
     /// Create new application state from config file path.
     /// Loads existing tasks from environment directories.
-    pub async fn new(config_path: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new(
+        config_path: PathBuf,
+        branch_model: String,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let config = EnvironmentConfig::load(&config_path).await?;
 
         for env in &config.environments {
@@ -111,6 +116,7 @@ impl AppState {
                 event_channels: HashMap::new(),
                 interrupt_channels: HashMap::new(),
                 agent_config: AnyAgentConfig::default(),
+                branch_model,
                 config_path,
             })),
         })
@@ -131,6 +137,7 @@ impl AppState {
                 event_channels: HashMap::new(),
                 interrupt_channels: HashMap::new(),
                 agent_config: AnyAgentConfig::default(),
+                branch_model: "claude-haiku-4-5".to_string(),
                 config_path: PathBuf::new(),
             })),
         }
@@ -179,6 +186,11 @@ impl AppState {
     /// Get the agent config.
     pub async fn get_agent_config(&self) -> AnyAgentConfig {
         self.inner.read().await.agent_config.clone()
+    }
+
+    /// Get the model used for branch name generation.
+    pub async fn get_branch_model(&self) -> String {
+        self.inner.read().await.branch_model.clone()
     }
 
     /// List all tasks, cleaning up any with missing worktrees.

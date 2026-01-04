@@ -29,7 +29,7 @@ export default function NewTaskForm() {
       const result = await createTask({
         environment: selectedEnv(),
         base_branch: baseBranch(),
-        feature_branch: featureBranch(),
+        feature_branch: featureBranch().trim() || undefined,
         prompt: prompt(),
         agent: agent(),
       });
@@ -42,7 +42,7 @@ export default function NewTaskForm() {
   };
 
   const isValid = () =>
-    selectedEnv() && baseBranch().trim() && featureBranch().trim() && prompt().trim();
+    selectedEnv() && baseBranch().trim() && prompt().trim();
 
   const inputClass = "w-full px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-400 dark:placeholder-gray-500";
 
@@ -126,7 +126,7 @@ export default function NewTaskForm() {
               type="text"
               value={featureBranch()}
               onInput={(e) => setFeatureBranch(e.currentTarget.value)}
-              placeholder="feature/add-auth"
+              placeholder="Optional (auto-generate from prompt)"
               class={inputClass}
             />
           </div>

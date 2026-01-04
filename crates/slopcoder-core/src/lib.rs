@@ -1,6 +1,7 @@
 pub mod anyagent;
 pub mod claude_agent;
 pub mod codex_agent;
+pub mod branch_picker;
 pub mod environment;
 pub mod events;
 pub mod persistence;

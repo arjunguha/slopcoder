@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use slopcoder_core::{
     anyagent::{resume_anyagent, spawn_anyagent, AgentKind},
+    branch_picker::pick_feature_branch,
     task::{Task, TaskId},
     AgentEvent,
 };
@@ -258,7 +259,7 @@ async fn get_task(id: String, state: AppState) -> Result<impl Reply, Infallible>
 struct CreateTaskRequest {
     environment: String,
     base_branch: String,
-    feature_branch: String,
+    feature_branch: Option<String>,
     prompt: String,
     #[serde(default)]
     agent: Option<AgentKind>,
@@ -286,9 +287,33 @@ async fn create_task(
         ));
     };
 
+    let feature_branch = match req
+        .feature_branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(branch) => branch.to_string(),
+        None => {
+            let model = state.get_branch_model().await;
+            match pick_feature_branch(&req.prompt, &model).await {
+                Ok(branch) => branch,
+                Err(err) => {
+                    tracing::warn!("Failed to generate feature branch: {}", err);
+                    return Ok(warp::reply::with_status(
+                        warp::reply::json(&ErrorResponse {
+                            error: "You must enter the name of the feature branch.".to_string(),
+                        }),
+                        StatusCode::BAD_REQUEST,
+                    ));
+                }
+            }
+        }
+    };
+
     // Create a new feature branch worktree
     let worktree_path = match env
-        .create_worktree_from_base(&req.base_branch, &req.feature_branch)
+        .create_worktree_from_base(&req.base_branch, &feature_branch)
         .await
     {
         Ok(path) => path,
@@ -314,7 +339,7 @@ async fn create_task(
         req.agent.unwrap_or_default(),
         req.environment,
         Some(req.base_branch),
-        req.feature_branch,
+        feature_branch,
         worktree_path.clone(),
     );
 
