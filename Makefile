@@ -1,4 +1,4 @@
-.PHONY: help all build build-release build-frontend test test-core test-server test-frontend appimage clean
+.PHONY: help all build build-release build-frontend test test-core test-server test-frontend test-frontend-npm appimage clean
 
 help:
 	@echo "Targets:"
@@ -10,6 +10,7 @@ help:
 	@echo "  test-core       Run slopcoder-core tests"
 	@echo "  test-server     Run slopcoder-server tests"
 	@echo "  test-frontend   Build frontend (no tests)"
+	@echo "  test-frontend-npm  Run frontend npm tests"
 	@echo "  appimage        Build AppImage package"
 	@echo "  clean           Clean Rust and frontend build outputs"
 
@@ -35,6 +36,9 @@ test-server:
 
 test-frontend:
 	cd frontend && npm install && npm run build
+
+test-frontend-npm:
+	cd frontend && npm install && npm run test
 
 appimage:
 	./appimage/build.sh
