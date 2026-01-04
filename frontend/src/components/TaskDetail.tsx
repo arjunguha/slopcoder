@@ -30,14 +30,69 @@ function StatusBadge(props: { status: Task["status"] }) {
   );
 }
 
+function parseJson(value?: string): unknown | null {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
 function renderPrettyJson(value?: string) {
   if (!value) return value;
-  try {
-    const parsed = JSON.parse(value);
-    return JSON.stringify(parsed, null, 2);
-  } catch {
-    return value;
+  const parsed = parseJson(value);
+  if (parsed === null) return value;
+  return JSON.stringify(parsed, null, 2);
+}
+
+function formatToolCallArgs(value?: string) {
+  const parsed = parseJson(value);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
   }
+
+  const args = parsed as Record<string, unknown>;
+  const description = typeof args.description === "string" ? args.description : null;
+  const command = typeof args.command === "string" ? args.command : null;
+  const filePath = typeof args.file_path === "string" ? args.file_path : null;
+  const url = typeof args.url === "string" ? args.url : null;
+  const remaining = Object.fromEntries(
+    Object.entries(args).filter(
+      ([key]) => key !== "description" && key !== "command" && key !== "file_path" && key !== "url"
+    )
+  );
+
+  return (
+    <div class="mt-1 text-xs text-gray-600 dark:text-gray-400">
+      {description && <div class="font-medium text-gray-700 dark:text-gray-300">{description}</div>}
+      {command && (
+        <div class="mt-1">
+          <span class="uppercase tracking-wide text-gray-500 dark:text-gray-400">command</span>
+          <pre class="mt-1 bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
+            {command}
+          </pre>
+        </div>
+      )}
+      {filePath && (
+        <div class="mt-1">
+          <span class="uppercase tracking-wide text-gray-500 dark:text-gray-400">file</span>{" "}
+          <span class="font-mono text-gray-800 dark:text-gray-200">{filePath}</span>
+        </div>
+      )}
+      {url && (
+        <div class="mt-1">
+          <span class="uppercase tracking-wide text-gray-500 dark:text-gray-400">url</span>{" "}
+          <span class="font-mono text-gray-800 dark:text-gray-200">{url}</span>
+        </div>
+      )}
+      {Object.keys(remaining).length > 0 && (
+        <pre class="mt-2 bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
+          {JSON.stringify(remaining, null, 2)}
+        </pre>
+      )}
+    </div>
+  );
 }
 
 function formatPath(path: string) {
@@ -55,21 +110,17 @@ function summarizeOutput(output?: string) {
 }
 
 function summarizeJsonShape(value?: string) {
-  if (!value) return null;
-  try {
-    const parsed = JSON.parse(value);
-    if (Array.isArray(parsed)) {
-      return `JSON array (${parsed.length} item${parsed.length === 1 ? "" : "s"})`;
-    }
-    if (parsed && typeof parsed === "object") {
-      const keys = Object.keys(parsed);
-      const preview = keys.slice(0, 4).join(", ");
-      return `JSON object (${keys.length} key${keys.length === 1 ? "" : "s"}${preview ? `: ${preview}` : ""})`;
-    }
-    return `JSON ${typeof parsed}`;
-  } catch {
-    return null;
+  const parsed = parseJson(value);
+  if (parsed === null) return null;
+  if (Array.isArray(parsed)) {
+    return `JSON array (${parsed.length} item${parsed.length === 1 ? "" : "s"})`;
   }
+  if (parsed && typeof parsed === "object") {
+    const keys = Object.keys(parsed);
+    const preview = keys.slice(0, 4).join(", ");
+    return `JSON object (${keys.length} key${keys.length === 1 ? "" : "s"}${preview ? `: ${preview}` : ""})`;
+  }
+  return `JSON ${typeof parsed}`;
 }
 
 function CommandExecutionSummary(props: { item: CompletedItem }) {
@@ -120,15 +171,85 @@ function FileChangeSummary(props: { item: CompletedItem }) {
 
 function ToolOutputSummary(props: { item: CompletedItem }) {
   const output = props.item.output || "";
+  const parsed = parseJson(output);
+  const parsedObject =
+    parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  const stdout =
+    (typeof props.item.stdout === "string" ? props.item.stdout : null) ||
+    (typeof parsedObject?.stdout === "string" ? (parsedObject.stdout as string) : null);
+  const stderr =
+    (typeof props.item.stderr === "string" ? props.item.stderr : null) ||
+    (typeof parsedObject?.stderr === "string" ? (parsedObject.stderr as string) : null);
+  const exitCode =
+    typeof props.item.exit_code === "number"
+      ? props.item.exit_code
+      : typeof parsedObject?.exit_code === "number"
+        ? (parsedObject.exit_code as number)
+        : undefined;
+  const remaining =
+    parsedObject &&
+    Object.fromEntries(
+      Object.entries(parsedObject).filter(
+        ([key]) => key !== "stdout" && key !== "stderr" && key !== "exit_code"
+      )
+    );
+  const remainingKeys = remaining ? Object.keys(remaining) : [];
+  const outputForSummary = stdout || stderr || output;
   const jsonShape = summarizeJsonShape(output);
-  const summary = summarizeOutput(output);
+  const summary = summarizeOutput(outputForSummary || "");
+  const summaryBits = [
+    exitCode !== undefined ? `exit ${exitCode}` : null,
+    jsonShape,
+    summary,
+  ].filter(Boolean);
   return (
     <div class="text-sm text-gray-700 dark:text-gray-300 py-1">
       <div class="font-medium text-gray-900 dark:text-gray-100">Tool output</div>
       <div class="text-xs text-gray-500 dark:text-gray-400">
-        {jsonShape ? `${jsonShape} • ` : ""}
-        {summary}
+        {summaryBits.join(" • ")}
       </div>
+      {stdout && (
+        <div class="mt-2">
+          <div class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">stdout</div>
+          <pre class="text-xs bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
+            {stdout}
+          </pre>
+        </div>
+      )}
+      {stderr && (
+        <div class="mt-2">
+          <div class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">stderr</div>
+          <pre class="text-xs bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md p-2 overflow-x-auto whitespace-pre-wrap text-red-700 dark:text-red-300">
+            {stderr}
+          </pre>
+        </div>
+      )}
+      {remainingKeys.length > 0 && (
+        <div class="mt-2">
+          <div class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            details
+          </div>
+          <pre class="text-xs bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
+            {JSON.stringify(remaining, null, 2)}
+          </pre>
+        </div>
+      )}
+      {!stdout && !stderr && remainingKeys.length === 0 && parsed !== null && (
+        <div class="mt-2">
+          <pre class="text-xs bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
+            {JSON.stringify(parsed, null, 2)}
+          </pre>
+        </div>
+      )}
+      {!stdout && !stderr && remainingKeys.length === 0 && parsed === null && output && (
+        <div class="mt-2">
+          <pre class="text-xs bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
+            {output}
+          </pre>
+        </div>
+      )}
     </div>
   );
 }
@@ -210,10 +331,15 @@ function ItemDisplay(props: { item: CompletedItem }) {
   }
 
   if (item.type === "tool_call") {
+    const formattedArgs = formatToolCallArgs(item.arguments);
     return (
-      <div class="text-yellow-600 dark:text-yellow-400 font-mono text-sm py-1">
-        <span class="text-yellow-700 dark:text-yellow-500">Tool:</span> {item.name}
-        {item.arguments && (
+      <div class="text-yellow-700 dark:text-yellow-400 text-sm py-1">
+        <div class="font-medium">
+          <span class="text-yellow-800 dark:text-yellow-300">Tool:</span>{" "}
+          <span class="font-mono">{item.name}</span>
+        </div>
+        {formattedArgs}
+        {!formattedArgs && item.arguments && (
           <pre class="text-xs text-gray-600 dark:text-gray-400 mt-1 overflow-x-auto">
             {renderPrettyJson(item.arguments)}
           </pre>

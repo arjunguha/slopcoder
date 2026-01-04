@@ -68,6 +68,8 @@ export interface CompletedItem {
   aggregated_output?: string;
   exit_code?: number;
   status?: string;
+  stdout?: string;
+  stderr?: string;
   changes?: Array<{
     kind: string;
     path: string;
