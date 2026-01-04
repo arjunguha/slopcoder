@@ -1,4 +1,3 @@
-- If you're Codex, I think you write bad commit messages. So, before committing, look at the git log
-  for some example commit messages from Claude to see what a good commit message looks like.
-  You will need to look at the whole commit messaage from Claude to see what I mean.
-- As the final step of every task, you must build code and run tests.
+- Ensure you run tests after you conclude all tasks.
+- Don't ever make any tests optional.
+- If you successfully implement a requested feature, commit it.
