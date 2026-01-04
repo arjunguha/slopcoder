@@ -270,7 +270,7 @@ function EventDisplay(props: { event: AgentEvent }) {
 
   if (e.type === "session.started") {
     return (
-      <div class="text-xs text-gray-500 dark:text-gray-400">Session started: {e.session_id}</div>
+      <div class="text-xs text-gray-500 dark:text-gray-400">Session started</div>
     );
   }
 
@@ -499,12 +499,6 @@ export default function TaskDetail() {
               <span>
                 feature: {task()!.feature_branch}
               </span>
-              {task()!.session_id && (
-                <>
-                  <span class="mx-2">•</span>
-                  <span class="font-mono text-xs">{task()!.session_id}</span>
-                </>
-              )}
             </div>
 
             {/* Output */}
