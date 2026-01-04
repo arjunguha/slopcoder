@@ -803,5 +803,53 @@ async fn load_git_diff(worktree_path: &Path, base_branch: &str) -> Result<String
         }
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    let mut diff = String::from_utf8_lossy(&output.stdout).to_string();
+
+    let untracked = Command::new("git")
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .current_dir(worktree_path)
+        .output()
+        .await?;
+
+    if !untracked.status.success() {
+        let stderr = String::from_utf8_lossy(&untracked.stderr);
+        if !stderr.trim().is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                stderr.to_string(),
+            ));
+        }
+    }
+
+    for path in String::from_utf8_lossy(&untracked.stdout).lines() {
+        if path.trim().is_empty() {
+            continue;
+        }
+        let untracked_diff = Command::new("git")
+            .args(["diff", "--no-index", "--", "/dev/null", path])
+            .current_dir(worktree_path)
+            .output()
+            .await?;
+
+        let status = untracked_diff.status;
+        if !status.success() && status.code() != Some(1) {
+            let stderr = String::from_utf8_lossy(&untracked_diff.stderr);
+            if !stderr.trim().is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    stderr.to_string(),
+                ));
+            }
+        }
+
+        let chunk = String::from_utf8_lossy(&untracked_diff.stdout);
+        if !chunk.trim().is_empty() {
+            if !diff.is_empty() && !diff.ends_with('\n') {
+                diff.push('\n');
+            }
+            diff.push_str(&chunk);
+        }
+    }
+
+    Ok(diff)
 }
