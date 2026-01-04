@@ -109,6 +109,18 @@ function summarizeOutput(output?: string) {
   return `${lineCount} line${lineCount === 1 ? "" : "s"}, ${size} char${size === 1 ? "" : "s"}`;
 }
 
+function clipText(value: string, maxLines: number, maxChars: number) {
+  const lines = value.split(/\r?\n/);
+  const limitedLines = lines.slice(0, maxLines);
+  let clipped = lines.length > maxLines;
+  let text = limitedLines.join("\n");
+  if (text.length > maxChars) {
+    text = text.slice(0, maxChars);
+    clipped = true;
+  }
+  return { text, clipped };
+}
+
 function summarizeJsonShape(value?: string) {
   const parsed = parseJson(value);
   if (parsed === null) return null;
@@ -204,6 +216,10 @@ function ToolOutputSummary(props: { item: CompletedItem }) {
     jsonShape,
     summary,
   ].filter(Boolean);
+  const stdoutPreview = stdout ? clipText(stdout, 12, 800) : null;
+  const stderrPreview = stderr ? clipText(stderr, 12, 800) : null;
+  const outputPreview = output ? clipText(output, 12, 800) : null;
+
   return (
     <div class="text-sm text-gray-700 dark:text-gray-300 py-1">
       <div class="font-medium text-gray-900 dark:text-gray-100">Tool output</div>
@@ -214,16 +230,26 @@ function ToolOutputSummary(props: { item: CompletedItem }) {
         <div class="mt-2">
           <div class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">stdout</div>
           <pre class="text-xs bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
-            {stdout}
+            {stdoutPreview?.text}
           </pre>
+          {stdoutPreview?.clipped && (
+            <div class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
+              Output truncated in log view.
+            </div>
+          )}
         </div>
       )}
       {stderr && (
         <div class="mt-2">
           <div class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">stderr</div>
           <pre class="text-xs bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md p-2 overflow-x-auto whitespace-pre-wrap text-red-700 dark:text-red-300">
-            {stderr}
+            {stderrPreview?.text}
           </pre>
+          {stderrPreview?.clipped && (
+            <div class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
+              Output truncated in log view.
+            </div>
+          )}
         </div>
       )}
       {remainingKeys.length > 0 && (
@@ -246,8 +272,13 @@ function ToolOutputSummary(props: { item: CompletedItem }) {
       {!stdout && !stderr && remainingKeys.length === 0 && parsed === null && output && (
         <div class="mt-2">
           <pre class="text-xs bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
-            {output}
+            {outputPreview?.text}
           </pre>
+          {outputPreview?.clipped && (
+            <div class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
+              Output truncated in log view.
+            </div>
+          )}
         </div>
       )}
     </div>
