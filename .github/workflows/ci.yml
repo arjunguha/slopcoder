@@ -10,4 +10,4 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Run tests
-        run: cargo test --workspace
+        run: cargo test --workspace --features slopcoder-core/test-opencode

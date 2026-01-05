@@ -1,7 +1,12 @@
 //! Integration tests for slopcoder-core.
 //!
-//! These tests require the Codex CLI to be installed and available in PATH.
-//! They are ignored by default; run with `cargo test -- --ignored` to execute.
+//! Agent integration tests are gated behind feature flags:
+//! - `test-codex`: Enable Codex agent tests
+//! - `test-claude`: Enable Claude agent tests
+//! - `test-cursor`: Enable Cursor agent tests
+//! - `test-opencode`: Enable OpenCode agent tests
+//!
+//! Run with: `cargo test --features test-opencode` (or other features)
 
 use slopcoder_core::{
     anyagent::{resume_anyagent, spawn_anyagent, AgentKind, AnyAgentConfig},
@@ -10,46 +15,6 @@ use slopcoder_core::{
 };
 use tempfile::TempDir;
 use tokio::process::Command;
-
-/// Check if codex is available.
-async fn codex_available() -> bool {
-    Command::new("codex")
-        .arg("--version")
-        .output()
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Check if claude is available.
-async fn claude_available() -> bool {
-    Command::new("claude")
-        .arg("--version")
-        .output()
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Check if cursor-agent is available.
-async fn cursor_available() -> bool {
-    Command::new("cursor-agent")
-        .arg("--version")
-        .output()
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Check if opencode is available.
-async fn opencode_available() -> bool {
-    Command::new("opencode")
-        .arg("--version")
-        .output()
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
 
 /// Set up a test environment with a bare git repo.
 async fn setup_test_env() -> (TempDir, Environment) {
@@ -161,6 +126,7 @@ async fn test_worktree_creation() {
     assert!(result.is_err());
 }
 
+#[cfg(any(feature = "test-codex", feature = "test-claude", feature = "test-cursor"))]
 async fn run_agent_hello_world(kind: AgentKind) {
     let (_temp_dir, env) = setup_test_env().await;
 
@@ -209,6 +175,7 @@ async fn run_agent_hello_world(kind: AgentKind) {
     assert!(content.contains("Hello"), "Content should contain 'Hello'");
 }
 
+#[cfg(any(feature = "test-codex", feature = "test-claude", feature = "test-cursor"))]
 async fn run_agent_resume(kind: AgentKind) {
     let (_temp_dir, env) = setup_test_env().await;
 
@@ -257,33 +224,27 @@ async fn run_agent_resume(kind: AgentKind) {
     assert!(content.contains("Goodbye"), "Content should contain 'Goodbye'");
 }
 
+#[cfg(feature = "test-codex")]
 #[tokio::test]
 async fn test_codex_agent_hello_world() {
-    assert!(codex_available().await, "Codex CLI not available");
     run_agent_hello_world(AgentKind::Codex).await;
 }
 
+#[cfg(feature = "test-codex")]
 #[tokio::test]
 async fn test_codex_agent_resume() {
-    assert!(codex_available().await, "Codex CLI not available");
     run_agent_resume(AgentKind::Codex).await;
 }
 
+#[cfg(feature = "test-claude")]
 #[tokio::test]
 async fn test_claude_agent_hello_world() {
-    if !claude_available().await {
-        eprintln!("Skipping Claude test: Claude CLI not available");
-        return;
-    }
     run_agent_hello_world(AgentKind::Claude).await;
 }
 
+#[cfg(feature = "test-claude")]
 #[tokio::test]
 async fn test_claude_agent_resume() {
-    if !claude_available().await {
-        eprintln!("Skipping Claude test: Claude CLI not available");
-        return;
-    }
     run_agent_resume(AgentKind::Claude).await;
 }
 
@@ -327,6 +288,7 @@ environments:
     assert_eq!(config.environments[0].name, "test-project");
 }
 
+#[cfg(any(feature = "test-codex", feature = "test-claude", feature = "test-cursor", feature = "test-opencode"))]
 async fn run_agent_interrupt(kind: AgentKind) {
     let (_temp_dir, env) = setup_test_env().await;
 
@@ -379,6 +341,7 @@ async fn run_agent_interrupt(kind: AgentKind) {
     }
 }
 
+#[cfg(any(feature = "test-codex", feature = "test-claude", feature = "test-cursor", feature = "test-opencode"))]
 async fn run_agent_resume_after_interrupt(kind: AgentKind) {
     let (_temp_dir, env) = setup_test_env().await;
 
@@ -441,6 +404,7 @@ async fn run_agent_resume_after_interrupt(kind: AgentKind) {
     assert!(content.contains("Completed"), "Content should contain 'Completed'");
 }
 
+#[cfg(any(feature = "test-codex", feature = "test-claude", feature = "test-cursor", feature = "test-opencode"))]
 async fn run_agent_double_interrupt(kind: AgentKind) {
     let (_temp_dir, env) = setup_test_env().await;
 
@@ -519,99 +483,76 @@ async fn run_agent_double_interrupt(kind: AgentKind) {
     assert!(content.contains("Final"), "Content should contain 'Final'");
 }
 
+#[cfg(feature = "test-codex")]
 #[tokio::test]
 async fn test_codex_agent_interrupt() {
-    assert!(codex_available().await, "Codex CLI not available");
     run_agent_interrupt(AgentKind::Codex).await;
 }
 
+#[cfg(feature = "test-claude")]
 #[tokio::test]
 async fn test_claude_agent_interrupt() {
-    if !claude_available().await {
-        eprintln!("Skipping Claude test: Claude CLI not available");
-        return;
-    }
     run_agent_interrupt(AgentKind::Claude).await;
 }
 
+#[cfg(feature = "test-codex")]
 #[tokio::test]
 async fn test_codex_agent_resume_after_interrupt() {
-    assert!(codex_available().await, "Codex CLI not available");
     run_agent_resume_after_interrupt(AgentKind::Codex).await;
 }
 
+#[cfg(feature = "test-claude")]
 #[tokio::test]
 async fn test_claude_agent_resume_after_interrupt() {
-    if !claude_available().await {
-        eprintln!("Skipping Claude test: Claude CLI not available");
-        return;
-    }
     run_agent_resume_after_interrupt(AgentKind::Claude).await;
 }
 
+#[cfg(feature = "test-codex")]
 #[tokio::test]
 async fn test_codex_agent_double_interrupt() {
-    assert!(codex_available().await, "Codex CLI not available");
     run_agent_double_interrupt(AgentKind::Codex).await;
 }
 
+#[cfg(feature = "test-claude")]
 #[tokio::test]
 async fn test_claude_agent_double_interrupt() {
-    if !claude_available().await {
-        eprintln!("Skipping Claude test: Claude CLI not available");
-        return;
-    }
     run_agent_double_interrupt(AgentKind::Claude).await;
 }
 
+#[cfg(feature = "test-cursor")]
 #[tokio::test]
 async fn test_cursor_agent_hello_world() {
-    if !cursor_available().await {
-        eprintln!("Skipping Cursor test: Cursor Agent CLI not available");
-        return;
-    }
     run_agent_hello_world(AgentKind::Cursor).await;
 }
 
+#[cfg(feature = "test-cursor")]
 #[tokio::test]
 async fn test_cursor_agent_resume() {
-    if !cursor_available().await {
-        eprintln!("Skipping Cursor test: Cursor Agent CLI not available");
-        return;
-    }
     run_agent_resume(AgentKind::Cursor).await;
 }
 
+#[cfg(feature = "test-cursor")]
 #[tokio::test]
 async fn test_cursor_agent_interrupt() {
-    if !cursor_available().await {
-        eprintln!("Skipping Cursor test: Cursor Agent CLI not available");
-        return;
-    }
     run_agent_interrupt(AgentKind::Cursor).await;
 }
 
+#[cfg(feature = "test-cursor")]
 #[tokio::test]
 async fn test_cursor_agent_resume_after_interrupt() {
-    if !cursor_available().await {
-        eprintln!("Skipping Cursor test: Cursor Agent CLI not available");
-        return;
-    }
     run_agent_resume_after_interrupt(AgentKind::Cursor).await;
 }
 
+#[cfg(feature = "test-cursor")]
 #[tokio::test]
 async fn test_cursor_agent_double_interrupt() {
-    if !cursor_available().await {
-        eprintln!("Skipping Cursor test: Cursor Agent CLI not available");
-        return;
-    }
     run_agent_double_interrupt(AgentKind::Cursor).await;
 }
 
 /// Run opencode agent hello world test.
 /// Unlike other agents, we don't verify file creation because the boa model
 /// may refuse to create files based on its system prompt.
+#[cfg(feature = "test-opencode")]
 async fn run_opencode_hello_world() {
     let (_temp_dir, env) = setup_test_env().await;
 
@@ -658,6 +599,7 @@ async fn run_opencode_hello_world() {
 
 /// Run opencode agent resume test.
 /// Tests that session resumption works correctly.
+#[cfg(feature = "test-opencode")]
 async fn run_opencode_resume() {
     let (_temp_dir, env) = setup_test_env().await;
 
@@ -707,47 +649,32 @@ async fn run_opencode_resume() {
     println!("Resume completed successfully");
 }
 
+#[cfg(feature = "test-opencode")]
 #[tokio::test]
 async fn test_opencode_agent_hello_world() {
-    if !opencode_available().await {
-        eprintln!("Skipping OpenCode test: OpenCode CLI not available");
-        return;
-    }
     run_opencode_hello_world().await;
 }
 
+#[cfg(feature = "test-opencode")]
 #[tokio::test]
 async fn test_opencode_agent_resume() {
-    if !opencode_available().await {
-        eprintln!("Skipping OpenCode test: OpenCode CLI not available");
-        return;
-    }
     run_opencode_resume().await;
 }
 
+#[cfg(feature = "test-opencode")]
 #[tokio::test]
 async fn test_opencode_agent_interrupt() {
-    if !opencode_available().await {
-        eprintln!("Skipping OpenCode test: OpenCode CLI not available");
-        return;
-    }
     run_agent_interrupt(AgentKind::Opencode).await;
 }
 
+#[cfg(feature = "test-opencode")]
 #[tokio::test]
 async fn test_opencode_agent_resume_after_interrupt() {
-    if !opencode_available().await {
-        eprintln!("Skipping OpenCode test: OpenCode CLI not available");
-        return;
-    }
     run_agent_resume_after_interrupt(AgentKind::Opencode).await;
 }
 
+#[cfg(feature = "test-opencode")]
 #[tokio::test]
 async fn test_opencode_agent_double_interrupt() {
-    if !opencode_available().await {
-        eprintln!("Skipping OpenCode test: OpenCode CLI not available");
-        return;
-    }
     run_agent_double_interrupt(AgentKind::Opencode).await;
 }
