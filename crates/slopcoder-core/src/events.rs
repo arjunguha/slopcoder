@@ -66,6 +66,12 @@ impl AgentEvent {
         Ok(parsed.into_agent_events())
     }
 
+    /// Parse a JSONL line into AgentEvents (Cursor format).
+    pub fn parse_cursor(line: &str) -> Result<Vec<Self>, serde_json::Error> {
+        let parsed: CursorStreamEvent = serde_json::from_str(line)?;
+        Ok(parsed.into_agent_events())
+    }
+
     /// Extract the session ID if this is a session.started event.
     pub fn session_id(&self) -> Option<Uuid> {
         match self {
@@ -352,6 +358,208 @@ struct ClaudeUsage {
     cache_read_input_tokens: Option<u64>,
     #[serde(default)]
     output_tokens: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum CursorStreamEvent {
+    #[serde(rename = "system")]
+    System {
+        #[serde(default)]
+        #[allow(dead_code)]
+        subtype: Option<String>,
+        #[serde(default)]
+        session_id: Option<Uuid>,
+        #[serde(flatten)]
+        #[allow(dead_code)]
+        extra: serde_json::Value,
+    },
+    #[serde(rename = "assistant")]
+    Assistant {
+        message: CursorMessage,
+        #[serde(default)]
+        #[allow(dead_code)]
+        session_id: Option<Uuid>,
+        #[serde(flatten)]
+        #[allow(dead_code)]
+        extra: serde_json::Value,
+    },
+    #[serde(rename = "user")]
+    User {
+        message: CursorUserMessage,
+        #[serde(default)]
+        #[allow(dead_code)]
+        session_id: Option<Uuid>,
+        #[serde(flatten)]
+        #[allow(dead_code)]
+        extra: serde_json::Value,
+    },
+    #[serde(rename = "result")]
+    Result {
+        #[serde(default)]
+        #[allow(dead_code)]
+        session_id: Option<Uuid>,
+        #[serde(default)]
+        #[allow(dead_code)]
+        is_error: Option<bool>,
+        #[serde(flatten)]
+        #[allow(dead_code)]
+        extra: serde_json::Value,
+    },
+    #[serde(rename = "thinking")]
+    Thinking {
+        #[serde(default)]
+        #[allow(dead_code)]
+        subtype: Option<String>,
+        #[serde(default)]
+        text: Option<String>,
+        #[serde(default)]
+        #[allow(dead_code)]
+        session_id: Option<Uuid>,
+        #[serde(flatten)]
+        #[allow(dead_code)]
+        extra: serde_json::Value,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+impl CursorStreamEvent {
+    fn into_agent_events(self) -> Vec<AgentEvent> {
+        match self {
+            CursorStreamEvent::System { session_id, .. } => {
+                if let Some(session_id) = session_id {
+                    vec![AgentEvent::SessionStarted { session_id }]
+                } else {
+                    vec![AgentEvent::Unknown]
+                }
+            }
+            CursorStreamEvent::Assistant { message, .. } => {
+                message.into_events()
+            }
+            CursorStreamEvent::User { .. } => {
+                // User messages are typically prompts, we can ignore or mark as prompt.sent
+                vec![AgentEvent::Unknown]
+            }
+            CursorStreamEvent::Result { is_error, .. } => {
+                vec![AgentEvent::TurnCompleted {
+                    usage: None,
+                }]
+            }
+            CursorStreamEvent::Thinking { text, .. } => {
+                if let Some(text) = text {
+                    vec![AgentEvent::ItemCompleted {
+                        item: CompletedItem {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            item_type: "reasoning".to_string(),
+                            text: Some(text),
+                            name: None,
+                            arguments: None,
+                            call_id: None,
+                            output: None,
+                            extra: serde_json::Value::Null,
+                        },
+                    }]
+                } else {
+                    vec![AgentEvent::Unknown]
+                }
+            }
+            CursorStreamEvent::Unknown => vec![AgentEvent::Unknown],
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CursorMessage {
+    #[serde(default)]
+    role: Option<String>,
+    content: Vec<CursorContent>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CursorContent {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    input: Option<serde_json::Value>,
+    #[serde(default)]
+    tool_use_id: Option<String>,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(flatten)]
+    #[allow(dead_code)]
+    extra: serde_json::Value,
+}
+
+impl CursorMessage {
+    fn into_events(self) -> Vec<AgentEvent> {
+        let mut events = Vec::new();
+        let mut text = String::new();
+
+        for block in self.content {
+            match block.kind.as_str() {
+                "text" => {
+                    if let Some(t) = block.text {
+                        text.push_str(&t);
+                    }
+                }
+                "tool_use" => {
+                    let call_id = block.id.clone();
+                    let arguments = block
+                        .input
+                        .as_ref()
+                        .and_then(|value| serde_json::to_string(value).ok());
+                    events.push(AgentEvent::ItemCompleted {
+                        item: CompletedItem {
+                            id: block.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                            item_type: "tool_call".to_string(),
+                            text: None,
+                            name: block.name,
+                            arguments,
+                            call_id,
+                            output: None,
+                            extra: serde_json::Value::Null,
+                        },
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        if !text.is_empty() {
+            events.push(AgentEvent::ItemCompleted {
+                item: CompletedItem {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    item_type: "agent_message".to_string(),
+                    text: Some(text),
+                    name: None,
+                    arguments: None,
+                    call_id: None,
+                    output: None,
+                    extra: serde_json::Value::Null,
+                },
+            });
+        }
+
+        if events.is_empty() {
+            events.push(AgentEvent::Unknown);
+        }
+
+        events
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CursorUserMessage {
+    #[serde(default)]
+    role: Option<String>,
+    content: Vec<CursorContent>,
 }
 
 #[cfg(test)]

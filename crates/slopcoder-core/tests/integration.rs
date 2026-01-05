@@ -31,6 +31,16 @@ async fn claude_available() -> bool {
         .unwrap_or(false)
 }
 
+/// Check if cursor-agent is available.
+async fn cursor_available() -> bool {
+    Command::new("cursor-agent")
+        .arg("--version")
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Set up a test environment with a bare git repo.
 async fn setup_test_env() -> (TempDir, Environment) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -542,4 +552,49 @@ async fn test_claude_agent_double_interrupt() {
         return;
     }
     run_agent_double_interrupt(AgentKind::Claude).await;
+}
+
+#[tokio::test]
+async fn test_cursor_agent_hello_world() {
+    if !cursor_available().await {
+        eprintln!("Skipping Cursor test: Cursor Agent CLI not available");
+        return;
+    }
+    run_agent_hello_world(AgentKind::Cursor).await;
+}
+
+#[tokio::test]
+async fn test_cursor_agent_resume() {
+    if !cursor_available().await {
+        eprintln!("Skipping Cursor test: Cursor Agent CLI not available");
+        return;
+    }
+    run_agent_resume(AgentKind::Cursor).await;
+}
+
+#[tokio::test]
+async fn test_cursor_agent_interrupt() {
+    if !cursor_available().await {
+        eprintln!("Skipping Cursor test: Cursor Agent CLI not available");
+        return;
+    }
+    run_agent_interrupt(AgentKind::Cursor).await;
+}
+
+#[tokio::test]
+async fn test_cursor_agent_resume_after_interrupt() {
+    if !cursor_available().await {
+        eprintln!("Skipping Cursor test: Cursor Agent CLI not available");
+        return;
+    }
+    run_agent_resume_after_interrupt(AgentKind::Cursor).await;
+}
+
+#[tokio::test]
+async fn test_cursor_agent_double_interrupt() {
+    if !cursor_available().await {
+        eprintln!("Skipping Cursor test: Cursor Agent CLI not available");
+        return;
+    }
+    run_agent_double_interrupt(AgentKind::Cursor).await;
 }

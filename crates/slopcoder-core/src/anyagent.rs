@@ -2,6 +2,7 @@
 
 use crate::claude_agent::ClaudeAgent;
 use crate::codex_agent::CodexAgent;
+use crate::cursor_agent::CursorAgent;
 use crate::events::AgentEvent;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -42,6 +43,7 @@ pub struct AgentResult {
 pub enum AgentKind {
     Codex,
     Claude,
+    Cursor,
 }
 
 impl Default for AgentKind {
@@ -92,11 +94,33 @@ impl Default for ClaudeAgentConfig {
     }
 }
 
+/// Configuration for running the Cursor agent.
+#[derive(Debug, Clone)]
+pub struct CursorAgentConfig {
+    /// Path to the cursor-agent binary.
+    pub cursor_path: String,
+    /// Model to use (optional, uses cursor-agent default if not set).
+    pub model: Option<String>,
+    /// Additional flags to pass to cursor-agent.
+    pub extra_args: Vec<String>,
+}
+
+impl Default for CursorAgentConfig {
+    fn default() -> Self {
+        Self {
+            cursor_path: "cursor-agent".to_string(),
+            model: None,
+            extra_args: Vec::new(),
+        }
+    }
+}
+
 /// Combined configuration for all supported agents.
 #[derive(Debug, Clone)]
 pub struct AnyAgentConfig {
     pub codex: CodexAgentConfig,
     pub claude: ClaudeAgentConfig,
+    pub cursor: CursorAgentConfig,
 }
 
 impl Default for AnyAgentConfig {
@@ -104,6 +128,7 @@ impl Default for AnyAgentConfig {
         Self {
             codex: CodexAgentConfig::default(),
             claude: ClaudeAgentConfig::default(),
+            cursor: CursorAgentConfig::default(),
         }
     }
 }
@@ -139,6 +164,10 @@ pub async fn spawn_anyagent(
             let agent = ClaudeAgent::spawn(&config.claude, working_dir, prompt).await?;
             Ok(Box::new(agent))
         }
+        AgentKind::Cursor => {
+            let agent = CursorAgent::spawn(&config.cursor, working_dir, prompt).await?;
+            Ok(Box::new(agent))
+        }
     }
 }
 
@@ -157,6 +186,10 @@ pub async fn resume_anyagent(
         }
         AgentKind::Claude => {
             let agent = ClaudeAgent::resume(&config.claude, working_dir, session_id, prompt).await?;
+            Ok(Box::new(agent))
+        }
+        AgentKind::Cursor => {
+            let agent = CursorAgent::resume(&config.cursor, working_dir, session_id, prompt).await?;
             Ok(Box::new(agent))
         }
     }
@@ -183,6 +216,14 @@ mod tests {
     fn test_claude_config_default() {
         let config = ClaudeAgentConfig::default();
         assert_eq!(config.claude_path, "claude");
+        assert!(config.model.is_none());
+        assert!(config.extra_args.is_empty());
+    }
+
+    #[test]
+    fn test_cursor_config_default() {
+        let config = CursorAgentConfig::default();
+        assert_eq!(config.cursor_path, "cursor-agent");
         assert!(config.model.is_none());
         assert!(config.extra_args.is_empty());
     }

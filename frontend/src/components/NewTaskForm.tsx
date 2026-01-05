@@ -144,6 +144,7 @@ export default function NewTaskForm() {
           >
             <option value="codex">Codex</option>
             <option value="claude">Claude</option>
+            <option value="cursor">Cursor</option>
           </select>
         </div>
 
