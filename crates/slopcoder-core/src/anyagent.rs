@@ -3,6 +3,7 @@
 use crate::claude_agent::ClaudeAgent;
 use crate::codex_agent::CodexAgent;
 use crate::cursor_agent::CursorAgent;
+use crate::opencode_agent::OpencodeAgent;
 use crate::events::AgentEvent;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -44,6 +45,7 @@ pub enum AgentKind {
     Codex,
     Claude,
     Cursor,
+    Opencode,
 }
 
 impl Default for AgentKind {
@@ -115,12 +117,34 @@ impl Default for CursorAgentConfig {
     }
 }
 
+/// Configuration for running the OpenCode agent.
+#[derive(Debug, Clone)]
+pub struct OpencodeAgentConfig {
+    /// Path to the opencode binary.
+    pub opencode_path: String,
+    /// Model to use (hard-coded for opencode).
+    pub model: String,
+    /// Additional flags to pass to opencode.
+    pub extra_args: Vec<String>,
+}
+
+impl Default for OpencodeAgentConfig {
+    fn default() -> Self {
+        Self {
+            opencode_path: "opencode".to_string(),
+            model: "litellm-guha-anderson/boa".to_string(),
+            extra_args: Vec::new(),
+        }
+    }
+}
+
 /// Combined configuration for all supported agents.
 #[derive(Debug, Clone)]
 pub struct AnyAgentConfig {
     pub codex: CodexAgentConfig,
     pub claude: ClaudeAgentConfig,
     pub cursor: CursorAgentConfig,
+    pub opencode: OpencodeAgentConfig,
 }
 
 impl Default for AnyAgentConfig {
@@ -129,6 +153,7 @@ impl Default for AnyAgentConfig {
             codex: CodexAgentConfig::default(),
             claude: ClaudeAgentConfig::default(),
             cursor: CursorAgentConfig::default(),
+            opencode: OpencodeAgentConfig::default(),
         }
     }
 }
@@ -168,6 +193,10 @@ pub async fn spawn_anyagent(
             let agent = CursorAgent::spawn(&config.cursor, working_dir, prompt).await?;
             Ok(Box::new(agent))
         }
+        AgentKind::Opencode => {
+            let agent = OpencodeAgent::spawn(&config.opencode, working_dir, prompt).await?;
+            Ok(Box::new(agent))
+        }
     }
 }
 
@@ -190,6 +219,10 @@ pub async fn resume_anyagent(
         }
         AgentKind::Cursor => {
             let agent = CursorAgent::resume(&config.cursor, working_dir, session_id, prompt).await?;
+            Ok(Box::new(agent))
+        }
+        AgentKind::Opencode => {
+            let agent = OpencodeAgent::resume(&config.opencode, working_dir, session_id, prompt).await?;
             Ok(Box::new(agent))
         }
     }
@@ -225,6 +258,14 @@ mod tests {
         let config = CursorAgentConfig::default();
         assert_eq!(config.cursor_path, "cursor-agent");
         assert!(config.model.is_none());
+        assert!(config.extra_args.is_empty());
+    }
+
+    #[test]
+    fn test_opencode_config_default() {
+        let config = OpencodeAgentConfig::default();
+        assert_eq!(config.opencode_path, "opencode");
+        assert_eq!(config.model, "litellm-guha-anderson/boa");
         assert!(config.extra_args.is_empty());
     }
 }

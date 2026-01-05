@@ -72,10 +72,34 @@ impl AgentEvent {
         Ok(parsed.into_agent_events())
     }
 
+    /// Parse a JSONL line into AgentEvents (OpenCode format).
+    pub fn parse_opencode(line: &str) -> Result<Vec<Self>, serde_json::Error> {
+        let parsed: OpencodeStreamEvent = serde_json::from_str(line)?;
+        Ok(parsed.into_agent_events())
+    }
+
     /// Extract the session ID if this is a session.started event.
     pub fn session_id(&self) -> Option<Uuid> {
         match self {
             AgentEvent::SessionStarted { session_id } => Some(*session_id),
+            _ => None,
+        }
+    }
+
+    /// Extract the OpenCode session ID (UUID and original string) if this is a session started event.
+    /// Returns (generated_uuid, original_session_string).
+    pub fn opencode_session_id(&self) -> Option<(Uuid, String)> {
+        match self {
+            AgentEvent::BackgroundEvent { event, extra } => {
+                // OpenCode stores session info in BackgroundEvent
+                if event.as_deref() == Some("opencode_session") {
+                    if let Some(session_str) = extra.get("session_string").and_then(|v| v.as_str()) {
+                        let uuid = opencode_session_string_to_uuid(session_str);
+                        return Some((uuid, session_str.to_string()));
+                    }
+                }
+                None
+            }
             _ => None,
         }
     }
@@ -562,6 +586,175 @@ struct CursorUserMessage {
     content: Vec<CursorContent>,
 }
 
+/// Generate a deterministic UUID from an opencode session string.
+fn opencode_session_string_to_uuid(session_string: &str) -> Uuid {
+    // Use UUID v5 (SHA-1 based) with a custom namespace
+    let namespace = Uuid::NAMESPACE_OID;
+    Uuid::new_v5(&namespace, session_string.as_bytes())
+}
+
+/// OpenCode stream event types.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum OpencodeStreamEvent {
+    #[serde(rename = "step_start")]
+    StepStart {
+        #[serde(default, rename = "sessionID")]
+        session_id: Option<String>,
+        #[serde(default)]
+        part: Option<serde_json::Value>,
+    },
+    #[serde(rename = "text")]
+    Text {
+        #[serde(default, rename = "sessionID")]
+        session_id: Option<String>,
+        #[serde(default)]
+        part: Option<OpencodeTextPart>,
+    },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        #[serde(default, rename = "sessionID")]
+        session_id: Option<String>,
+        #[serde(default)]
+        part: Option<OpencodeToolPart>,
+    },
+    #[serde(rename = "step_finish")]
+    StepFinish {
+        #[serde(default, rename = "sessionID")]
+        session_id: Option<String>,
+        #[serde(default)]
+        part: Option<OpencodeStepFinishPart>,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpencodeTextPart {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpencodeToolPart {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default, rename = "callID")]
+    call_id: Option<String>,
+    #[serde(default)]
+    tool: Option<String>,
+    #[serde(default)]
+    state: Option<OpencodeToolState>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpencodeToolState {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    input: Option<serde_json::Value>,
+    #[serde(default)]
+    output: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpencodeStepFinishPart {
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    tokens: Option<OpencodeTokens>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpencodeTokens {
+    #[serde(default)]
+    input: Option<u64>,
+    #[serde(default)]
+    output: Option<u64>,
+    #[serde(default)]
+    reasoning: Option<u64>,
+}
+
+impl OpencodeStreamEvent {
+    fn into_agent_events(self) -> Vec<AgentEvent> {
+        match self {
+            OpencodeStreamEvent::StepStart { session_id, .. } => {
+                // Emit SessionStarted with UUID, plus BackgroundEvent with original string
+                if let Some(session_str) = session_id {
+                    let uuid = opencode_session_string_to_uuid(&session_str);
+                    vec![
+                        AgentEvent::SessionStarted { session_id: uuid },
+                        AgentEvent::BackgroundEvent {
+                            event: Some("opencode_session".to_string()),
+                            extra: serde_json::json!({
+                                "session_string": session_str
+                            }),
+                        },
+                    ]
+                } else {
+                    vec![AgentEvent::TurnStarted {}]
+                }
+            }
+            OpencodeStreamEvent::Text { part, .. } => {
+                if let Some(part) = part {
+                    if let Some(text) = part.text {
+                        return vec![AgentEvent::ItemCompleted {
+                            item: CompletedItem {
+                                id: part.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                                item_type: "agent_message".to_string(),
+                                text: Some(text),
+                                name: None,
+                                arguments: None,
+                                call_id: None,
+                                output: None,
+                                extra: serde_json::Value::Null,
+                            },
+                        }];
+                    }
+                }
+                vec![AgentEvent::Unknown]
+            }
+            OpencodeStreamEvent::ToolUse { part, .. } => {
+                if let Some(part) = part {
+                    let arguments = part
+                        .state
+                        .as_ref()
+                        .and_then(|s| s.input.as_ref())
+                        .and_then(|v| serde_json::to_string(v).ok());
+                    let output = part.state.as_ref().and_then(|s| s.output.clone());
+
+                    return vec![AgentEvent::ItemCompleted {
+                        item: CompletedItem {
+                            id: part.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                            item_type: "tool_call".to_string(),
+                            text: None,
+                            name: part.tool,
+                            arguments,
+                            call_id: part.call_id,
+                            output,
+                            extra: serde_json::Value::Null,
+                        },
+                    }];
+                }
+                vec![AgentEvent::Unknown]
+            }
+            OpencodeStreamEvent::StepFinish { part, .. } => {
+                let usage = part.and_then(|p| {
+                    p.tokens.map(|t| UsageStats {
+                        input_tokens: t.input,
+                        cached_input_tokens: None,
+                        output_tokens: t.output,
+                    })
+                });
+                vec![AgentEvent::TurnCompleted { usage }]
+            }
+            OpencodeStreamEvent::Unknown => vec![AgentEvent::Unknown],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -721,5 +914,93 @@ mod tests {
             }
             _ => panic!("Expected TurnCompleted event"),
         }
+    }
+
+    // OpenCode event parsing tests
+    const OPENCODE_STEP_START_JSON: &str = r#"{"type":"step_start","timestamp":1767609902893,"sessionID":"ses_4723d5c64ffeo3VMtIbToaB7GI","part":{"id":"prt_test","sessionID":"ses_4723d5c64ffeo3VMtIbToaB7GI","messageID":"msg_test","type":"step-start"}}"#;
+    const OPENCODE_TEXT_JSON: &str = r#"{"type":"text","timestamp":1767609902907,"sessionID":"ses_4723d5c64ffeo3VMtIbToaB7GI","part":{"id":"prt_text","sessionID":"ses_4723d5c64ffeo3VMtIbToaB7GI","messageID":"msg_text","type":"text","text":"hello"}}"#;
+    const OPENCODE_TOOL_USE_JSON: &str = r#"{"type":"tool_use","timestamp":1767609910770,"sessionID":"ses_4723d3e62ffeHCDksgr4fRpmzP","part":{"id":"prt_tool","sessionID":"ses_4723d3e62ffeHCDksgr4fRpmzP","messageID":"msg_tool","type":"tool","callID":"chatcmpl-tool-123","tool":"write","state":{"status":"completed","input":{"content":"hello world","filePath":"/tmp/test.txt"},"output":""}}}"#;
+    const OPENCODE_STEP_FINISH_JSON: &str = r#"{"type":"step_finish","timestamp":1767609902907,"sessionID":"ses_4723d5c64ffeo3VMtIbToaB7GI","part":{"id":"prt_finish","sessionID":"ses_4723d5c64ffeo3VMtIbToaB7GI","messageID":"msg_finish","type":"step-finish","reason":"stop","cost":0,"tokens":{"input":10176,"output":2,"reasoning":0}}}"#;
+
+    #[test]
+    fn test_parse_opencode_step_start() {
+        let events = AgentEvent::parse_opencode(OPENCODE_STEP_START_JSON).unwrap();
+        assert_eq!(events.len(), 2);
+        // First event should be SessionStarted with UUID
+        match &events[0] {
+            AgentEvent::SessionStarted { session_id } => {
+                // UUID should be deterministic from the session string
+                let expected = opencode_session_string_to_uuid("ses_4723d5c64ffeo3VMtIbToaB7GI");
+                assert_eq!(*session_id, expected);
+            }
+            _ => panic!("Expected SessionStarted, got {:?}", events[0]),
+        }
+        // Second event should be BackgroundEvent with original session string
+        match &events[1] {
+            AgentEvent::BackgroundEvent { event, extra } => {
+                assert_eq!(event.as_deref(), Some("opencode_session"));
+                assert_eq!(
+                    extra.get("session_string").and_then(|v| v.as_str()),
+                    Some("ses_4723d5c64ffeo3VMtIbToaB7GI")
+                );
+            }
+            _ => panic!("Expected BackgroundEvent, got {:?}", events[1]),
+        }
+    }
+
+    #[test]
+    fn test_parse_opencode_text() {
+        let events = AgentEvent::parse_opencode(OPENCODE_TEXT_JSON).unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AgentEvent::ItemCompleted { item } => {
+                assert_eq!(item.item_type, "agent_message");
+                assert_eq!(item.text, Some("hello".to_string()));
+            }
+            _ => panic!("Expected ItemCompleted event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_opencode_tool_use() {
+        let events = AgentEvent::parse_opencode(OPENCODE_TOOL_USE_JSON).unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AgentEvent::ItemCompleted { item } => {
+                assert_eq!(item.item_type, "tool_call");
+                assert_eq!(item.name.as_deref(), Some("write"));
+                assert_eq!(item.call_id.as_deref(), Some("chatcmpl-tool-123"));
+                assert!(item.arguments.is_some());
+            }
+            _ => panic!("Expected ItemCompleted event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_opencode_step_finish() {
+        let events = AgentEvent::parse_opencode(OPENCODE_STEP_FINISH_JSON).unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AgentEvent::TurnCompleted { usage } => {
+                let usage = usage.as_ref().unwrap();
+                assert_eq!(usage.input_tokens, Some(10176));
+                assert_eq!(usage.output_tokens, Some(2));
+            }
+            _ => panic!("Expected TurnCompleted event"),
+        }
+    }
+
+    #[test]
+    fn test_opencode_session_id_extraction() {
+        let events = AgentEvent::parse_opencode(OPENCODE_STEP_START_JSON).unwrap();
+        // Standard session_id() on SessionStarted event
+        let uuid_from_session = events[0].session_id().unwrap();
+        let expected_uuid = opencode_session_string_to_uuid("ses_4723d5c64ffeo3VMtIbToaB7GI");
+        assert_eq!(uuid_from_session, expected_uuid);
+
+        // opencode_session_id() on BackgroundEvent
+        let (uuid, session_str) = events[1].opencode_session_id().unwrap();
+        assert_eq!(session_str, "ses_4723d5c64ffeo3VMtIbToaB7GI");
+        assert_eq!(uuid, expected_uuid);
     }
 }

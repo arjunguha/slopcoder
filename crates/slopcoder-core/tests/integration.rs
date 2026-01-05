@@ -41,6 +41,16 @@ async fn cursor_available() -> bool {
         .unwrap_or(false)
 }
 
+/// Check if opencode is available.
+async fn opencode_available() -> bool {
+    Command::new("opencode")
+        .arg("--version")
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Set up a test environment with a bare git repo.
 async fn setup_test_env() -> (TempDir, Environment) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -597,4 +607,147 @@ async fn test_cursor_agent_double_interrupt() {
         return;
     }
     run_agent_double_interrupt(AgentKind::Cursor).await;
+}
+
+/// Run opencode agent hello world test.
+/// Unlike other agents, we don't verify file creation because the boa model
+/// may refuse to create files based on its system prompt.
+async fn run_opencode_hello_world() {
+    let (_temp_dir, env) = setup_test_env().await;
+
+    let worktree_path = env
+        .create_worktree("main")
+        .await
+        .expect("Should create worktree");
+
+    let config = AnyAgentConfig::default();
+
+    let mut agent = spawn_anyagent(
+        AgentKind::Opencode,
+        &config,
+        &worktree_path,
+        "Create a file called hello.txt containing the text 'Hello, World!'",
+    )
+    .await
+    .expect("Should spawn agent");
+
+    let mut event_count = 0;
+    while let Some(result) = agent.next_event().await {
+        match result {
+            Ok(event) => {
+                event_count += 1;
+                println!("Event: {:?}", event);
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+            }
+        }
+    }
+
+    let result = agent.wait().await.expect("Agent should complete");
+    println!("Session ID: {}", result.session_id);
+    println!("Success: {}", result.success);
+
+    // Verify basic agent functionality
+    assert!(result.success);
+    assert!(event_count > 0, "Should receive events");
+
+    // Note: We don't verify file creation for opencode because the boa model
+    // may refuse to create files based on its instructions.
+}
+
+/// Run opencode agent resume test.
+/// Tests that session resumption works correctly.
+async fn run_opencode_resume() {
+    let (_temp_dir, env) = setup_test_env().await;
+
+    let worktree_path = env
+        .create_worktree("main")
+        .await
+        .expect("Should create worktree");
+
+    let config = AnyAgentConfig::default();
+
+    let mut agent = spawn_anyagent(
+        AgentKind::Opencode,
+        &config,
+        &worktree_path,
+        "What is 2+2?",
+    )
+    .await
+    .expect("Should spawn agent");
+
+    while agent.next_event().await.is_some() {}
+
+    let result1 = agent.wait().await.expect("First run should complete");
+    assert!(result1.success);
+
+    let session_id = result1.session_id;
+    println!("First session ID: {}", session_id);
+
+    // Resume with the same session
+    let mut agent = resume_anyagent(
+        AgentKind::Opencode,
+        &config,
+        &worktree_path,
+        session_id,
+        "What is 3+3?",
+    )
+    .await
+    .expect("Should resume agent");
+
+    let mut event_count = 0;
+    while let Some(_) = agent.next_event().await {
+        event_count += 1;
+    }
+
+    let result2 = agent.wait().await.expect("Second run should complete");
+    assert!(result2.success);
+    assert!(event_count > 0, "Should receive events in resumed session");
+    println!("Resume completed successfully");
+}
+
+#[tokio::test]
+async fn test_opencode_agent_hello_world() {
+    if !opencode_available().await {
+        eprintln!("Skipping OpenCode test: OpenCode CLI not available");
+        return;
+    }
+    run_opencode_hello_world().await;
+}
+
+#[tokio::test]
+async fn test_opencode_agent_resume() {
+    if !opencode_available().await {
+        eprintln!("Skipping OpenCode test: OpenCode CLI not available");
+        return;
+    }
+    run_opencode_resume().await;
+}
+
+#[tokio::test]
+async fn test_opencode_agent_interrupt() {
+    if !opencode_available().await {
+        eprintln!("Skipping OpenCode test: OpenCode CLI not available");
+        return;
+    }
+    run_agent_interrupt(AgentKind::Opencode).await;
+}
+
+#[tokio::test]
+async fn test_opencode_agent_resume_after_interrupt() {
+    if !opencode_available().await {
+        eprintln!("Skipping OpenCode test: OpenCode CLI not available");
+        return;
+    }
+    run_agent_resume_after_interrupt(AgentKind::Opencode).await;
+}
+
+#[tokio::test]
+async fn test_opencode_agent_double_interrupt() {
+    if !opencode_available().await {
+        eprintln!("Skipping OpenCode test: OpenCode CLI not available");
+        return;
+    }
+    run_agent_double_interrupt(AgentKind::Opencode).await;
 }
