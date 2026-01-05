@@ -18,7 +18,8 @@ struct BranchNameSignature {
     /// Task description for the new feature.
     #[input]
     task: String,
-    /// A short git feature branch name like "feature/add-login".
+    /// A short git feature branch name, e.g. "fix-login-error". Do not use
+    /// slashes or spaces.
     #[output]
     branch: String,
 }
