@@ -395,7 +395,8 @@ struct TaskOutputResponse {
 
 #[derive(Serialize)]
 struct TaskDiffResponse {
-    diff: String,
+    staged: String,
+    unstaged: String,
 }
 
 async fn send_prompt(
@@ -573,7 +574,10 @@ async fn get_task_diff(id: String, state: AppState) -> Result<impl Reply, Infall
 
     match load_git_diff(&task.worktree_path, base_branch).await {
         Ok(diff) => Ok(warp::reply::with_status(
-            warp::reply::json(&TaskDiffResponse { diff }),
+            warp::reply::json(&TaskDiffResponse {
+                staged: diff.staged,
+                unstaged: diff.unstaged,
+            }),
             StatusCode::OK,
         )),
         Err(e) => Ok(warp::reply::with_status(
@@ -823,15 +827,21 @@ async fn read_output_events(path: &Path) -> Result<Vec<AgentEvent>, std::io::Err
     Ok(events)
 }
 
-async fn load_git_diff(worktree_path: &Path, base_branch: &str) -> Result<String, std::io::Error> {
-    let output = Command::new("git")
-        .args(["diff", base_branch])
+struct DiffResult {
+    staged: String,
+    unstaged: String,
+}
+
+async fn load_git_diff(worktree_path: &Path, base_branch: &str) -> Result<DiffResult, std::io::Error> {
+    // Staged changes: diff between base branch and index (staged files)
+    let staged_output = Command::new("git")
+        .args(["diff", "--cached", base_branch])
         .current_dir(worktree_path)
         .output()
         .await?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !staged_output.status.success() {
+        let stderr = String::from_utf8_lossy(&staged_output.stderr);
         if !stderr.trim().is_empty() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -840,8 +850,28 @@ async fn load_git_diff(worktree_path: &Path, base_branch: &str) -> Result<String
         }
     }
 
-    let mut diff = String::from_utf8_lossy(&output.stdout).to_string();
+    let staged = String::from_utf8_lossy(&staged_output.stdout).to_string();
 
+    // Unstaged changes: diff between index and working tree
+    let unstaged_output = Command::new("git")
+        .args(["diff"])
+        .current_dir(worktree_path)
+        .output()
+        .await?;
+
+    if !unstaged_output.status.success() {
+        let stderr = String::from_utf8_lossy(&unstaged_output.stderr);
+        if !stderr.trim().is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                stderr.to_string(),
+            ));
+        }
+    }
+
+    let mut unstaged = String::from_utf8_lossy(&unstaged_output.stdout).to_string();
+
+    // Untracked files (also considered unstaged)
     let untracked = Command::new("git")
         .args(["ls-files", "--others", "--exclude-standard"])
         .current_dir(worktree_path)
@@ -881,12 +911,12 @@ async fn load_git_diff(worktree_path: &Path, base_branch: &str) -> Result<String
 
         let chunk = String::from_utf8_lossy(&untracked_diff.stdout);
         if !chunk.trim().is_empty() {
-            if !diff.is_empty() && !diff.ends_with('\n') {
-                diff.push('\n');
+            if !unstaged.is_empty() && !unstaged.ends_with('\n') {
+                unstaged.push('\n');
             }
-            diff.push_str(&chunk);
+            unstaged.push_str(&chunk);
         }
     }
 
-    Ok(diff)
+    Ok(DiffResult { staged, unstaged })
 }

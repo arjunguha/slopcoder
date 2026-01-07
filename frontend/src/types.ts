@@ -51,7 +51,8 @@ export interface TaskOutputResponse {
 }
 
 export interface TaskDiffResponse {
-  diff: string;
+  staged: string;
+  unstaged: string;
 }
 
 // Codex Event Types (from WebSocket)

@@ -20,6 +20,7 @@ import {
   prettyPrintJsonString,
   prettyPrintJsonValue,
 } from "../utils/messageFormatting";
+import { DiffViewer } from "./DiffViewer";
 
 function StatusBadge(props: { status: Task["status"] }) {
   const colors = {
@@ -646,12 +647,7 @@ export default function TaskDetail() {
               </div>
             </Show>
             <Show when={diff()}>
-              <div
-                class="bg-gray-100 dark:bg-gray-900 rounded-lg p-4 font-mono text-xs overflow-x-auto overflow-y-auto border border-gray-200 dark:border-gray-700 whitespace-pre"
-                style="max-height: 480px"
-              >
-                {diff()!.diff.trim() || "No changes yet."}
-              </div>
+              <DiffViewer staged={diff()!.staged} unstaged={diff()!.unstaged} />
             </Show>
           </div>
         </div>
