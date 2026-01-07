@@ -155,8 +155,32 @@ pub struct CompletedItem {
     pub output: Option<String>,
 
     /// Additional fields we don't explicitly model.
-    #[serde(flatten)]
+    /// Note: This uses a custom serializer to handle non-object values gracefully.
+    /// The `#[serde(flatten)]` attribute only works with maps/objects, so we skip
+    /// serialization for non-object values (strings, arrays, etc.) to avoid errors.
+    #[serde(flatten, serialize_with = "serialize_extra_if_object")]
     pub extra: serde_json::Value,
+}
+
+/// Custom serializer for `extra` that only serializes if it's an object.
+/// Non-object values (null, string, array, etc.) are skipped during serialization
+/// because `#[serde(flatten)]` only works with maps/objects.
+fn serialize_extra_if_object<S>(value: &serde_json::Value, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeMap;
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut ser_map = serializer.serialize_map(Some(map.len()))?;
+            for (k, v) in map {
+                ser_map.serialize_entry(k, v)?;
+            }
+            ser_map.end()
+        }
+        // For non-object values, serialize an empty map (effectively skipping)
+        _ => serializer.serialize_map(Some(0))?.end(),
+    }
 }
 
 impl CompletedItem {
