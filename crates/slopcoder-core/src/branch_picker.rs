@@ -19,7 +19,7 @@ struct BranchNameSignature {
     #[input]
     task: String,
     /// A short git feature branch name, e.g. "fix-login-error". Do not use
-    /// slashes or spaces.
+    /// slashes or spaces. The feature name should not have more than 5 words.
     #[output]
     branch: String,
 }
@@ -135,8 +135,8 @@ fn normalize_branch_name(raw: &str) -> Option<String> {
         return None;
     }
 
-    if !cleaned.starts_with("feature/") {
-        cleaned = format!("feature/{}", cleaned);
+    if cleaned.len() > 40 {
+        cleaned.truncate(40);
     }
 
     Some(cleaned)
@@ -145,6 +145,23 @@ fn normalize_branch_name(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_normalize_branch_name_truncation() {
+        let long_name = "this-is-a-very-long-branch-name-that-should-be-truncated-because-it-is-too-long";
+        let normalized = normalize_branch_name(long_name).unwrap();
+        assert!(normalized.len() <= 40);
+        // It gets truncated to exactly 40 chars
+        assert_eq!(normalized, "this-is-a-very-long-branch-name-that-sho");
+
+        let short_name = "short-name";
+        let normalized = normalize_branch_name(short_name).unwrap();
+        assert_eq!(normalized, "short-name");
+        
+        let existing_feature = "feature/already-has-prefix";
+        let normalized = normalize_branch_name(existing_feature).unwrap();
+        assert_eq!(normalized, "feature/already-has-prefix");
+    }
 
     #[tokio::test]
     async fn generates_feature_branch_name() {
@@ -156,7 +173,6 @@ mod tests {
         .await
         .expect("branch generation failed");
 
-        assert!(branch.starts_with("feature/"));
         assert!(!branch.contains(' '));
         assert!(!branch.is_empty());
     }
