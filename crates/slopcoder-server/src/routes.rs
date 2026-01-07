@@ -86,6 +86,18 @@ struct ErrorResponse {
 }
 
 async fn list_branches(name: String, state: AppState) -> Result<impl Reply, Infallible> {
+    let name = match urlencoding::decode(&name) {
+        Ok(decoded) => decoded.into_owned(),
+        Err(_) => {
+            return Ok(warp::reply::with_status(
+                warp::reply::json(&ErrorResponse {
+                    error: "Environment name must be valid URL encoding".to_string(),
+                }),
+                StatusCode::BAD_REQUEST,
+            ));
+        }
+    };
+
     let config = state.get_config().await;
 
     let Some(env) = config.find(&name) else {

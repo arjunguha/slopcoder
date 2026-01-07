@@ -25,6 +25,7 @@ async-trait = "0.1"
 # Utilities
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+urlencoding = "2.1"
 
 # Web server
 warp = "0.3"
