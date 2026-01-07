@@ -39,61 +39,322 @@ function StatusBadge(props: { status: Task["status"] }) {
   );
 }
 
-function formatToolCallArgs(value?: string) {
-  const parsed = parseJson(value);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+interface TodoItem {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+  activeForm: string;
+}
+
+// Tool-specific formatters
+
+function ToolCallWrapper(props: { name: string; icon?: string; children: any }) {
+  return (
+    <div class="text-sm py-1">
+      <div class="font-medium text-gray-700 dark:text-gray-300 flex items-center gap-1">
+        {props.icon && <span>{props.icon}</span>}
+        <span>{props.name}</span>
+      </div>
+      {props.children}
+    </div>
+  );
+}
+
+function TodoWriteDisplay(props: { args: Record<string, unknown> }) {
+  const todos = props.args.todos;
+  if (!Array.isArray(todos) || todos.length === 0) {
     return null;
   }
 
-  const args = parsed as Record<string, unknown>;
-  const description = typeof args.description === "string" ? args.description : null;
-  const command = typeof args.command === "string" ? args.command : null;
-  const filePath = typeof args.file_path === "string" ? args.file_path : null;
-  const url = typeof args.url === "string" ? args.url : null;
-  const remaining = Object.fromEntries(
-    Object.entries(args).filter(
-      ([key]) => key !== "description" && key !== "command" && key !== "file_path" && key !== "url"
-    )
-  );
-  const remainingPretty = prettyPrintJsonValue(remaining);
+  const todoItems = todos as TodoItem[];
+  const statusIcon = (status: string) => {
+    switch (status) {
+      case "completed":
+        return <span class="text-green-600 dark:text-green-400">✓</span>;
+      case "in_progress":
+        return <span class="text-blue-600 dark:text-blue-400 animate-pulse">●</span>;
+      default:
+        return <span class="text-gray-400 dark:text-gray-500">○</span>;
+    }
+  };
 
   return (
-    <div class="mt-1 text-xs text-gray-600 dark:text-gray-400">
-      {description && <div class="font-medium text-gray-700 dark:text-gray-300">{description}</div>}
-      {command && (
-        <div class="mt-1">
-          <span class="uppercase tracking-wide text-gray-500 dark:text-gray-400">command</span>
-          <pre class="mt-1 bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
-            {command}
-          </pre>
-        </div>
+    <ToolCallWrapper name="Todo List" icon="📋">
+      <div class="mt-2 space-y-1">
+        <For each={todoItems}>
+          {(todo) => (
+            <div class={`flex items-start gap-2 text-sm ${
+              todo.status === "completed"
+                ? "text-gray-500 dark:text-gray-400"
+                : todo.status === "in_progress"
+                  ? "text-gray-900 dark:text-gray-100 font-medium"
+                  : "text-gray-700 dark:text-gray-300"
+            }`}>
+              <span class="flex-shrink-0 w-4 text-center">{statusIcon(todo.status)}</span>
+              <span class={todo.status === "completed" ? "line-through" : ""}>
+                {todo.status === "in_progress" ? todo.activeForm : todo.content}
+              </span>
+            </div>
+          )}
+        </For>
+      </div>
+    </ToolCallWrapper>
+  );
+}
+
+function BashDisplay(props: { args: Record<string, unknown> }) {
+  const command = typeof props.args.command === "string" ? props.args.command : null;
+  const description = typeof props.args.description === "string" ? props.args.description : null;
+
+  if (!command) return null;
+
+  return (
+    <ToolCallWrapper name="Bash" icon="$">
+      {description && (
+        <div class="text-xs text-gray-600 dark:text-gray-400 mt-1">{description}</div>
       )}
-      {filePath && (
-        <div class="mt-1">
-          <span class="uppercase tracking-wide text-gray-500 dark:text-gray-400">file</span>{" "}
-          <span class="font-mono text-gray-800 dark:text-gray-200">{filePath}</span>
-        </div>
-      )}
-      {url && (
-        <div class="mt-1">
-          <span class="uppercase tracking-wide text-gray-500 dark:text-gray-400">url</span>{" "}
-          <span class="font-mono text-gray-800 dark:text-gray-200">{url}</span>
-        </div>
-      )}
-      {Object.keys(remaining).length > 0 && (
+      <pre class="mt-1 text-xs bg-gray-900 dark:bg-gray-950 text-gray-100 border border-gray-700 rounded-md p-2 overflow-x-auto whitespace-pre-wrap font-mono">
+        {command}
+      </pre>
+    </ToolCallWrapper>
+  );
+}
+
+function ReadDisplay(props: { args: Record<string, unknown> }) {
+  const filePath = typeof props.args.file_path === "string" ? props.args.file_path : null;
+  const offset = typeof props.args.offset === "number" ? props.args.offset : null;
+  const limit = typeof props.args.limit === "number" ? props.args.limit : null;
+
+  if (!filePath) return null;
+
+  const rangeInfo = offset !== null || limit !== null
+    ? ` (${offset !== null ? `from line ${offset}` : ""}${offset !== null && limit !== null ? ", " : ""}${limit !== null ? `${limit} lines` : ""})`
+    : "";
+
+  return (
+    <ToolCallWrapper name="Read" icon="📄">
+      <div class="mt-1 font-mono text-xs text-gray-800 dark:text-gray-200 bg-gray-100 dark:bg-gray-800 rounded px-2 py-1 inline-block">
+        {formatPath(filePath)}{rangeInfo}
+      </div>
+    </ToolCallWrapper>
+  );
+}
+
+function EditDisplay(props: { args: Record<string, unknown> }) {
+  const filePath = typeof props.args.file_path === "string" ? props.args.file_path : null;
+  const oldString = typeof props.args.old_string === "string" ? props.args.old_string : null;
+  const newString = typeof props.args.new_string === "string" ? props.args.new_string : null;
+
+  if (!filePath) return null;
+
+  const oldPreview = oldString ? clipText(oldString, 5, 200) : null;
+  const newPreview = newString ? clipText(newString, 5, 200) : null;
+
+  return (
+    <ToolCallWrapper name="Edit" icon="✏️">
+      <div class="mt-1 font-mono text-xs text-gray-800 dark:text-gray-200 bg-gray-100 dark:bg-gray-800 rounded px-2 py-1 inline-block">
+        {formatPath(filePath)}
+      </div>
+      {oldPreview && (
         <div class="mt-2">
-          <pre class="bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
-            {remainingPretty.text}
+          <div class="text-xs text-red-600 dark:text-red-400 font-medium">- Remove:</div>
+          <pre class="text-xs bg-red-50 dark:bg-red-950/30 text-red-800 dark:text-red-300 border border-red-200 dark:border-red-800 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
+            {oldPreview.text}
           </pre>
-          {remainingPretty.clipped && (
+          {oldPreview.clipped && (
+            <div class="text-[11px] text-gray-500 dark:text-gray-400">Content truncated</div>
+          )}
+        </div>
+      )}
+      {newPreview && (
+        <div class="mt-2">
+          <div class="text-xs text-green-600 dark:text-green-400 font-medium">+ Add:</div>
+          <pre class="text-xs bg-green-50 dark:bg-green-950/30 text-green-800 dark:text-green-300 border border-green-200 dark:border-green-800 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
+            {newPreview.text}
+          </pre>
+          {newPreview.clipped && (
+            <div class="text-[11px] text-gray-500 dark:text-gray-400">Content truncated</div>
+          )}
+        </div>
+      )}
+    </ToolCallWrapper>
+  );
+}
+
+function WriteDisplay(props: { args: Record<string, unknown> }) {
+  const filePath = typeof props.args.file_path === "string" ? props.args.file_path : null;
+  const content = typeof props.args.content === "string" ? props.args.content : null;
+
+  if (!filePath) return null;
+
+  const contentPreview = content ? clipText(content, 8, 400) : null;
+
+  return (
+    <ToolCallWrapper name="Write" icon="📝">
+      <div class="mt-1 font-mono text-xs text-gray-800 dark:text-gray-200 bg-gray-100 dark:bg-gray-800 rounded px-2 py-1 inline-block">
+        {formatPath(filePath)}
+      </div>
+      {contentPreview && (
+        <div class="mt-2">
+          <pre class="text-xs bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
+            {contentPreview.text}
+          </pre>
+          {contentPreview.clipped && (
+            <div class="text-[11px] text-gray-500 dark:text-gray-400">Content truncated</div>
+          )}
+        </div>
+      )}
+    </ToolCallWrapper>
+  );
+}
+
+function GrepDisplay(props: { args: Record<string, unknown> }) {
+  const pattern = typeof props.args.pattern === "string" ? props.args.pattern : null;
+  const path = typeof props.args.path === "string" ? props.args.path : null;
+  const fileType = typeof props.args.type === "string" ? props.args.type : null;
+  const glob = typeof props.args.glob === "string" ? props.args.glob : null;
+
+  if (!pattern) return null;
+
+  return (
+    <ToolCallWrapper name="Grep" icon="🔍">
+      <div class="mt-1 space-y-1 text-xs">
+        <div>
+          <span class="text-gray-500 dark:text-gray-400">pattern: </span>
+          <span class="font-mono text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-950/30 px-1 rounded">
+            {pattern}
+          </span>
+        </div>
+        {path && (
+          <div>
+            <span class="text-gray-500 dark:text-gray-400">in: </span>
+            <span class="font-mono text-gray-800 dark:text-gray-200">{formatPath(path)}</span>
+          </div>
+        )}
+        {(fileType || glob) && (
+          <div>
+            <span class="text-gray-500 dark:text-gray-400">filter: </span>
+            <span class="font-mono text-gray-800 dark:text-gray-200">{fileType || glob}</span>
+          </div>
+        )}
+      </div>
+    </ToolCallWrapper>
+  );
+}
+
+function GlobDisplay(props: { args: Record<string, unknown> }) {
+  const pattern = typeof props.args.pattern === "string" ? props.args.pattern : null;
+  const path = typeof props.args.path === "string" ? props.args.path : null;
+
+  if (!pattern) return null;
+
+  return (
+    <ToolCallWrapper name="Glob" icon="📂">
+      <div class="mt-1 text-xs">
+        <span class="font-mono text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/30 px-1 rounded">
+          {pattern}
+        </span>
+        {path && (
+          <span class="text-gray-500 dark:text-gray-400 ml-2">
+            in {formatPath(path)}
+          </span>
+        )}
+      </div>
+    </ToolCallWrapper>
+  );
+}
+
+function TaskDisplay(props: { args: Record<string, unknown> }) {
+  const subagentType = typeof props.args.subagent_type === "string" ? props.args.subagent_type : null;
+  const description = typeof props.args.description === "string" ? props.args.description : null;
+  const prompt = typeof props.args.prompt === "string" ? props.args.prompt : null;
+
+  return (
+    <ToolCallWrapper name={`Task: ${subagentType || "Agent"}`} icon="🤖">
+      {description && (
+        <div class="mt-1 text-xs font-medium text-gray-700 dark:text-gray-300">{description}</div>
+      )}
+      {prompt && (
+        <div class="mt-1 text-xs text-gray-600 dark:text-gray-400 italic">
+          {clipText(prompt, 3, 150)?.text}
+        </div>
+      )}
+    </ToolCallWrapper>
+  );
+}
+
+function WebFetchDisplay(props: { args: Record<string, unknown> }) {
+  const url = typeof props.args.url === "string" ? props.args.url : null;
+  const prompt = typeof props.args.prompt === "string" ? props.args.prompt : null;
+
+  if (!url) return null;
+
+  return (
+    <ToolCallWrapper name="WebFetch" icon="🌐">
+      <div class="mt-1 text-xs">
+        <span class="font-mono text-blue-700 dark:text-blue-300 break-all">{url}</span>
+      </div>
+      {prompt && (
+        <div class="mt-1 text-xs text-gray-600 dark:text-gray-400 italic">
+          {clipText(prompt, 2, 100)?.text}
+        </div>
+      )}
+    </ToolCallWrapper>
+  );
+}
+
+function UnknownToolDisplay(props: { name: string; args: Record<string, unknown> }) {
+  const argsPretty = prettyPrintJsonValue(props.args);
+
+  return (
+    <div class="text-yellow-700 dark:text-yellow-400 text-sm py-1">
+      <div class="font-medium">
+        <span class="text-yellow-800 dark:text-yellow-300">Tool:</span>{" "}
+        <span class="font-mono">{props.name}</span>
+      </div>
+      {Object.keys(props.args).length > 0 && (
+        <div class="mt-1">
+          <pre class="text-xs text-gray-600 dark:text-gray-400 overflow-x-auto whitespace-pre-wrap">
+            {argsPretty.text}
+          </pre>
+          {argsPretty.clipped && (
             <div class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
-              Details truncated in log view.
+              Arguments truncated in log view.
             </div>
           )}
         </div>
       )}
     </div>
   );
+}
+
+function ToolCallDisplay(props: { name: string; arguments?: string }) {
+  const parsed = parseJson(props.arguments);
+  const args = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>)
+    : {};
+
+  switch (props.name) {
+    case "TodoWrite":
+      return <TodoWriteDisplay args={args} />;
+    case "Bash":
+      return <BashDisplay args={args} />;
+    case "Read":
+      return <ReadDisplay args={args} />;
+    case "Edit":
+      return <EditDisplay args={args} />;
+    case "Write":
+      return <WriteDisplay args={args} />;
+    case "Grep":
+      return <GrepDisplay args={args} />;
+    case "Glob":
+      return <GlobDisplay args={args} />;
+    case "Task":
+      return <TaskDisplay args={args} />;
+    case "WebFetch":
+      return <WebFetchDisplay args={args} />;
+    default:
+      return <UnknownToolDisplay name={props.name} args={args} />;
+  }
 }
 
 function formatPath(path: string) {
@@ -352,30 +613,7 @@ function ItemDisplay(props: { item: CompletedItem }) {
   }
 
   if (item.type === "tool_call") {
-    const formattedArgs = formatToolCallArgs(item.arguments);
-    const argsPretty = prettyPrintJsonString(item.arguments);
-    const argsPreview = item.arguments ? clipText(item.arguments, 12, 800) : null;
-    return (
-      <div class="text-yellow-700 dark:text-yellow-400 text-sm py-1">
-        <div class="font-medium">
-          <span class="text-yellow-800 dark:text-yellow-300">Tool:</span>{" "}
-          <span class="font-mono">{item.name}</span>
-        </div>
-        {formattedArgs}
-        {!formattedArgs && item.arguments && (
-          <div class="mt-1">
-            <pre class="text-xs text-gray-600 dark:text-gray-400 overflow-x-auto whitespace-pre-wrap">
-              {argsPretty ? argsPretty.text : argsPreview?.text}
-            </pre>
-            {(argsPretty?.clipped || argsPreview?.clipped) && (
-              <div class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
-                Arguments truncated in log view.
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    );
+    return <ToolCallDisplay name={item.name || "Unknown"} arguments={item.arguments} />;
   }
 
   if (item.type === "tool_output") {
