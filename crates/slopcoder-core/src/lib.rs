@@ -2,6 +2,7 @@ pub mod anyagent;
 pub mod claude_agent;
 pub mod codex_agent;
 pub mod cursor_agent;
+pub mod gemini_agent;
 pub mod opencode_agent;
 pub mod branch_picker;
 pub mod environment;
@@ -15,5 +16,5 @@ pub use persistence::{PersistenceError, PersistentTaskStore};
 pub use task::{Task, TaskId, TaskStatus};
 pub use anyagent::{
     resume_anyagent, spawn_anyagent, AgentError, AgentKind, AgentResult, AnyAgent,
-    AnyAgentConfig, ClaudeAgentConfig, CodexAgentConfig, CursorAgentConfig, OpencodeAgentConfig,
+    AnyAgentConfig, ClaudeAgentConfig, CodexAgentConfig, CursorAgentConfig, GeminiAgentConfig, OpencodeAgentConfig,
 };

@@ -83,7 +83,7 @@ export interface UsageStats {
   output_tokens?: number;
 }
 
-export type AgentKind = "codex" | "claude" | "cursor";
+export type AgentKind = "codex" | "claude" | "cursor" | "opencode" | "gemini";
 
 export type AgentEvent =
   | { type: "session.started"; session_id: string }

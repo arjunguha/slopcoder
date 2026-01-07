@@ -78,6 +78,12 @@ impl AgentEvent {
         Ok(parsed.into_agent_events())
     }
 
+    /// Parse a JSONL line into AgentEvents (Gemini format).
+    pub fn parse_gemini(line: &str) -> Result<Vec<Self>, serde_json::Error> {
+        let parsed: GeminiStreamEvent = serde_json::from_str(line)?;
+        Ok(parsed.into_agent_events())
+    }
+
     /// Extract the session ID if this is a session.started event.
     pub fn session_id(&self) -> Option<Uuid> {
         match self {
@@ -755,6 +761,139 @@ impl OpencodeStreamEvent {
     }
 }
 
+/// Gemini stream event types.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum GeminiStreamEvent {
+    #[serde(rename = "init")]
+    Init {
+        session_id: Uuid,
+        #[serde(flatten)]
+        extra: serde_json::Value,
+    },
+    #[serde(rename = "message")]
+    Message {
+        role: String,
+        content: String,
+        #[serde(default)]
+        delta: bool,
+        #[serde(flatten)]
+        extra: serde_json::Value,
+    },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        tool_name: String,
+        tool_id: String,
+        parameters: serde_json::Value,
+        #[serde(flatten)]
+        extra: serde_json::Value,
+    },
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        tool_id: String,
+        status: String,
+        output: Option<String>,
+        #[serde(flatten)]
+        extra: serde_json::Value,
+    },
+    #[serde(rename = "result")]
+    Result {
+        status: String,
+        #[serde(default)]
+        stats: Option<GeminiStats>,
+        #[serde(flatten)]
+        extra: serde_json::Value,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiStats {
+    #[serde(default)]
+    input_tokens: Option<u64>,
+    #[serde(default)]
+    output_tokens: Option<u64>,
+    #[serde(default, rename = "cached")]
+    cached_tokens: Option<u64>,
+    #[serde(flatten)]
+    extra: serde_json::Value,
+}
+
+impl GeminiStreamEvent {
+    fn into_agent_events(self) -> Vec<AgentEvent> {
+        match self {
+            GeminiStreamEvent::Init { session_id, .. } => {
+                vec![AgentEvent::SessionStarted { session_id }]
+            }
+            GeminiStreamEvent::Message { role, content, .. } => {
+                if role == "assistant" {
+                    vec![AgentEvent::ItemCompleted {
+                        item: CompletedItem {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            item_type: "agent_message".to_string(),
+                            text: Some(content),
+                            name: None,
+                            arguments: None,
+                            call_id: None,
+                            output: None,
+                            extra: serde_json::Value::Null,
+                        },
+                    }]
+                } else {
+                    // User messages are typically prompts or local echos
+                    vec![AgentEvent::Unknown]
+                }
+            }
+            GeminiStreamEvent::ToolUse {
+                tool_name,
+                tool_id,
+                parameters,
+                ..
+            } => {
+                let arguments = serde_json::to_string(&parameters).ok();
+                vec![AgentEvent::ItemCompleted {
+                    item: CompletedItem {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        item_type: "tool_call".to_string(),
+                        text: None,
+                        name: Some(tool_name),
+                        arguments,
+                        call_id: Some(tool_id),
+                        output: None,
+                        extra: serde_json::Value::Null,
+                    },
+                }]
+            }
+            GeminiStreamEvent::ToolResult {
+                tool_id,
+                output,
+                ..
+            } => vec![AgentEvent::ItemCompleted {
+                item: CompletedItem {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    item_type: "tool_output".to_string(),
+                    text: None,
+                    name: None,
+                    arguments: None,
+                    call_id: Some(tool_id),
+                    output,
+                    extra: serde_json::Value::Null,
+                },
+            }],
+            GeminiStreamEvent::Result { stats, .. } => {
+                let usage = stats.map(|s| UsageStats {
+                    input_tokens: s.input_tokens,
+                    cached_input_tokens: s.cached_tokens,
+                    output_tokens: s.output_tokens,
+                });
+                vec![AgentEvent::TurnCompleted { usage }]
+            }
+            GeminiStreamEvent::Unknown => vec![AgentEvent::Unknown],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1002,5 +1141,84 @@ mod tests {
         let (uuid, session_str) = events[1].opencode_session_id().unwrap();
         assert_eq!(session_str, "ses_4723d5c64ffeo3VMtIbToaB7GI");
         assert_eq!(uuid, expected_uuid);
+    }
+
+    // Gemini event parsing tests
+    const GEMINI_INIT_JSON: &str = r#"{"type":"init","timestamp":"2026-01-07T02:18:58.980Z","session_id":"219b0367-780a-4ea0-8ebb-875d740e8fe2","model":"auto-gemini-3"}"#;
+    const GEMINI_MESSAGE_JSON: &str = r#"{"type":"message","timestamp":"2026-01-07T02:19:02.137Z","role":"assistant","content":"I will execute the command.","delta":true}"#;
+    const GEMINI_TOOL_USE_JSON: &str = r#"{"type":"tool_use","timestamp":"2026-01-07T02:19:02.239Z","tool_name":"run_shell_command","tool_id":"call_123","parameters":{"command":"echo hello"}}"#;
+    const GEMINI_TOOL_RESULT_JSON: &str = r#"{"type":"tool_result","timestamp":"2026-01-07T02:19:02.263Z","tool_id":"call_123","status":"success","output":"hello"}"#;
+    const GEMINI_RESULT_JSON: &str = r#"{"type":"result","timestamp":"2026-01-07T02:21:30.824Z","status":"success","stats":{"input_tokens":100,"output_tokens":50,"cached":20}}"#;
+
+    #[test]
+    fn test_parse_gemini_init() {
+        let events = AgentEvent::parse_gemini(GEMINI_INIT_JSON).unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AgentEvent::SessionStarted { session_id } => {
+                assert_eq!(
+                    session_id.to_string(),
+                    "219b0367-780a-4ea0-8ebb-875d740e8fe2"
+                );
+            }
+            _ => panic!("Expected SessionStarted event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_gemini_message() {
+        let events = AgentEvent::parse_gemini(GEMINI_MESSAGE_JSON).unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AgentEvent::ItemCompleted { item } => {
+                assert_eq!(item.item_type, "agent_message");
+                assert_eq!(item.text.as_deref(), Some("I will execute the command."));
+            }
+            _ => panic!("Expected ItemCompleted event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_gemini_tool_use() {
+        let events = AgentEvent::parse_gemini(GEMINI_TOOL_USE_JSON).unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AgentEvent::ItemCompleted { item } => {
+                assert_eq!(item.item_type, "tool_call");
+                assert_eq!(item.name.as_deref(), Some("run_shell_command"));
+                assert_eq!(item.call_id.as_deref(), Some("call_123"));
+                assert!(item.arguments.is_some());
+            }
+            _ => panic!("Expected ItemCompleted event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_gemini_tool_result() {
+        let events = AgentEvent::parse_gemini(GEMINI_TOOL_RESULT_JSON).unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AgentEvent::ItemCompleted { item } => {
+                assert_eq!(item.item_type, "tool_output");
+                assert_eq!(item.call_id.as_deref(), Some("call_123"));
+                assert_eq!(item.output.as_deref(), Some("hello"));
+            }
+            _ => panic!("Expected ItemCompleted event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_gemini_result() {
+        let events = AgentEvent::parse_gemini(GEMINI_RESULT_JSON).unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AgentEvent::TurnCompleted { usage } => {
+                let usage = usage.as_ref().unwrap();
+                assert_eq!(usage.input_tokens, Some(100));
+                assert_eq!(usage.output_tokens, Some(50));
+                assert_eq!(usage.cached_input_tokens, Some(20));
+            }
+            _ => panic!("Expected TurnCompleted event"),
+        }
     }
 }

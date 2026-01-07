@@ -3,6 +3,7 @@
 use crate::claude_agent::ClaudeAgent;
 use crate::codex_agent::CodexAgent;
 use crate::cursor_agent::CursorAgent;
+use crate::gemini_agent::GeminiAgent;
 use crate::opencode_agent::OpencodeAgent;
 use crate::events::AgentEvent;
 use async_trait::async_trait;
@@ -46,6 +47,7 @@ pub enum AgentKind {
     Claude,
     Cursor,
     Opencode,
+    Gemini,
 }
 
 impl Default for AgentKind {
@@ -138,6 +140,27 @@ impl Default for OpencodeAgentConfig {
     }
 }
 
+/// Configuration for running the Gemini agent.
+#[derive(Debug, Clone)]
+pub struct GeminiAgentConfig {
+    /// Path to the gemini binary.
+    pub gemini_path: String,
+    /// Model to use (optional, uses gemini default if not set).
+    pub model: Option<String>,
+    /// Additional flags to pass to gemini.
+    pub extra_args: Vec<String>,
+}
+
+impl Default for GeminiAgentConfig {
+    fn default() -> Self {
+        Self {
+            gemini_path: "gemini".to_string(),
+            model: None,
+            extra_args: Vec::new(),
+        }
+    }
+}
+
 /// Combined configuration for all supported agents.
 #[derive(Debug, Clone)]
 pub struct AnyAgentConfig {
@@ -145,6 +168,7 @@ pub struct AnyAgentConfig {
     pub claude: ClaudeAgentConfig,
     pub cursor: CursorAgentConfig,
     pub opencode: OpencodeAgentConfig,
+    pub gemini: GeminiAgentConfig,
 }
 
 impl Default for AnyAgentConfig {
@@ -154,6 +178,7 @@ impl Default for AnyAgentConfig {
             claude: ClaudeAgentConfig::default(),
             cursor: CursorAgentConfig::default(),
             opencode: OpencodeAgentConfig::default(),
+            gemini: GeminiAgentConfig::default(),
         }
     }
 }
@@ -197,6 +222,10 @@ pub async fn spawn_anyagent(
             let agent = OpencodeAgent::spawn(&config.opencode, working_dir, prompt).await?;
             Ok(Box::new(agent))
         }
+        AgentKind::Gemini => {
+            let agent = GeminiAgent::spawn(&config.gemini, working_dir, prompt).await?;
+            Ok(Box::new(agent))
+        }
     }
 }
 
@@ -223,6 +252,10 @@ pub async fn resume_anyagent(
         }
         AgentKind::Opencode => {
             let agent = OpencodeAgent::resume(&config.opencode, working_dir, session_id, prompt).await?;
+            Ok(Box::new(agent))
+        }
+        AgentKind::Gemini => {
+            let agent = GeminiAgent::resume(&config.gemini, working_dir, session_id, prompt).await?;
             Ok(Box::new(agent))
         }
     }
@@ -266,6 +299,14 @@ mod tests {
         let config = OpencodeAgentConfig::default();
         assert_eq!(config.opencode_path, "opencode");
         assert_eq!(config.model, "litellm-guha-anderson/boa");
+        assert!(config.extra_args.is_empty());
+    }
+
+    #[test]
+    fn test_gemini_config_default() {
+        let config = GeminiAgentConfig::default();
+        assert_eq!(config.gemini_path, "gemini");
+        assert!(config.model.is_none());
         assert!(config.extra_args.is_empty());
     }
 }
