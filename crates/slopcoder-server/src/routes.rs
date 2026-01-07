@@ -174,7 +174,12 @@ fn tasks_routes(
             ws.on_upgrade(move |socket| handle_websocket(socket, id, state))
         });
 
-    list.or(create).or(get).or(prompt).or(output).or(diff).or(interrupt).or(stream)
+    let merge = warp::path!(String / "merge")
+        .and(warp::post())
+        .and(with_state(state.clone()))
+        .and_then(merge_task);
+
+    list.or(create).or(get).or(prompt).or(output).or(diff).or(interrupt).or(stream).or(merge)
 }
 
 #[derive(Serialize)]
@@ -589,6 +594,193 @@ async fn get_task_diff(id: String, state: AppState) -> Result<impl Reply, Infall
     }
 }
 
+async fn merge_task(id: String, state: AppState) -> Result<impl Reply, Infallible> {
+    let Ok(uuid) = Uuid::parse_str(&id) else {
+        return Ok(warp::reply::with_status(
+            warp::reply::json(&ErrorResponse {
+                error: "Invalid task ID".to_string(),
+            }),
+            StatusCode::BAD_REQUEST,
+        ));
+    };
+
+    let task_id = TaskId(uuid);
+    let task = match state.get_task(task_id).await {
+        Some(t) => t,
+        None => {
+            return Ok(warp::reply::with_status(
+                warp::reply::json(&ErrorResponse {
+                    error: "Task not found".to_string(),
+                }),
+                StatusCode::NOT_FOUND,
+            ));
+        }
+    };
+
+    // 1. Check for unstaged changes in the task's worktree
+    if has_unstaged_changes(&task.worktree_path).await {
+        return Ok(warp::reply::with_status(
+            warp::reply::json(&ErrorResponse {
+                error: "Task has unstaged changes. Please commit or stash them before merging.".to_string(),
+            }),
+            StatusCode::CONFLICT,
+        ));
+    }
+
+    let base_branch = task.base_branch.as_deref().unwrap_or("main");
+
+    // 2. Get environment and target worktree
+    let Some(_env_dir) = state.get_environment_directory(&task.environment).await else {
+        return Ok(warp::reply::with_status(
+            warp::reply::json(&ErrorResponse {
+                error: "Environment not found".to_string(),
+            }),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ));
+    };
+
+    // We need to access the Environment struct to get the worktree path properly.
+    // Since state.get_config() returns a full config, we can find the env there.
+    let config = state.get_config().await;
+    let Some(env) = config.find(&task.environment) else {
+        return Ok(warp::reply::with_status(
+            warp::reply::json(&ErrorResponse {
+                error: "Environment not found in config".to_string(),
+            }),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ));
+    };
+
+    let target_worktree = env.worktree_path(base_branch);
+    let target_exists = target_worktree.exists();
+
+    // 3. Prepare target worktree
+    if target_exists {
+        // If it exists, check for unstaged changes
+        if has_unstaged_changes(&target_worktree).await {
+            return Ok(warp::reply::with_status(
+                warp::reply::json(&ErrorResponse {
+                    error: format!("Target branch '{}' worktree has unstaged changes.", base_branch),
+                }),
+                StatusCode::CONFLICT,
+            ));
+        }
+    } else {
+        // Create it
+        if let Err(e) = env.create_worktree(base_branch).await {
+            return Ok(warp::reply::with_status(
+                warp::reply::json(&ErrorResponse {
+                    error: format!("Failed to create worktree for '{}': {}", base_branch, e),
+                }),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ));
+        }
+    }
+
+    // 4. Perform merge
+    tracing::info!("Merging {} into {} at {}", task.feature_branch, base_branch, target_worktree.display());
+
+    let merge_output = Command::new("git")
+        .args(["merge", &task.feature_branch])
+        .current_dir(&target_worktree)
+        .output()
+        .await;
+
+    match merge_output {
+        Ok(output) => {
+            if output.status.success() {
+                // Success!
+                // Push the changes to the remote if possible? 
+                // The requirements didn't say to push, just "merge into main/master".
+                // Usually "merge" implies local merge.
+                
+                Ok(warp::reply::with_status(
+                    warp::reply::json(&serde_json::json!({
+                        "status": "merged",
+                        "message": format!("Successfully merged {} into {}", task.feature_branch, base_branch)
+                    })),
+                    StatusCode::OK,
+                ))
+            } else {
+                // Merge failed (conflict?)
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                
+                tracing::warn!("Merge failed: {}\n{}", stdout, stderr);
+
+                // Abort merge
+                let _ = Command::new("git")
+                    .args(["merge", "--abort"])
+                    .current_dir(&target_worktree)
+                    .output()
+                    .await;
+
+                Ok(warp::reply::with_status(
+                    warp::reply::json(&ErrorResponse {
+                        error: format!("Merge failed (reverted): {}", stdout.trim()),
+                    }),
+                    StatusCode::CONFLICT,
+                ))
+            }
+        }
+        Err(e) => {
+             Ok(warp::reply::with_status(
+                warp::reply::json(&ErrorResponse {
+                    error: format!("Failed to execute git merge: {}", e),
+                }),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ))
+        }
+    }
+}
+
+async fn has_unstaged_changes(worktree_path: &Path) -> bool {
+    // Check for unstaged changes: diff between index and working tree
+    let unstaged_output = Command::new("git")
+        .args(["diff", "--quiet"]) // --quiet implies exit code 1 if there are changes
+        .current_dir(worktree_path)
+        .output()
+        .await;
+    
+    if let Ok(output) = unstaged_output {
+        if output.status.code() == Some(1) {
+             return true;
+        }
+    }
+
+    // Check for staged changes (to be safe, though "unstaged" was the requirement, 
+    // usually we want a clean slate. Requirement said "unstaged changes in main/master". 
+    // Usually merge requires clean index too).
+    // Let's check staged too to be safe.
+    let staged_output = Command::new("git")
+        .args(["diff", "--cached", "--quiet"])
+        .current_dir(worktree_path)
+        .output()
+        .await;
+
+    if let Ok(output) = staged_output {
+        if output.status.code() == Some(1) {
+             return true;
+        }
+    }
+
+    // Check for untracked files
+    let untracked_output = Command::new("git")
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .current_dir(worktree_path)
+        .output()
+        .await;
+
+    if let Ok(output) = untracked_output {
+         let stdout = String::from_utf8_lossy(&output.stdout);
+         if !stdout.trim().is_empty() {
+             return true;
+         }
+    }
+
+    false
+}
+
 /// Run the agent for a task.
 async fn run_agent(state: AppState, task_id: TaskId, prompt: String, session_id: Option<Uuid>) {
     let task = match state.get_task(task_id).await {
@@ -920,3 +1112,120 @@ async fn load_git_diff(worktree_path: &Path, base_branch: &str) -> Result<DiffRe
 
     Ok(DiffResult { staged, unstaged })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use slopcoder_core::environment::{Environment, EnvironmentConfig};
+    use tempfile::TempDir;
+    use tokio::process::Command;
+    use slopcoder_core::anyagent::AgentKind;
+
+    async fn setup_test_env() -> (TempDir, Environment) {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let base_path = temp_dir.path().to_path_buf();
+        let bare_path = base_path.join("bare");
+        tokio::fs::create_dir_all(&bare_path).await.unwrap();
+
+        // init bare
+        Command::new("git").args(["init", "--bare", "--initial-branch=main"]).current_dir(&bare_path).status().await.unwrap();
+
+        // clone to setup main
+        let clone_path = base_path.join("temp_clone");
+        Command::new("git").args(["clone", bare_path.to_str().unwrap(), clone_path.to_str().unwrap()]).status().await.unwrap();
+
+        // config
+        Command::new("git").args(["config", "user.email", "test@example.com"]).current_dir(&clone_path).status().await.unwrap();
+        Command::new("git").args(["config", "user.name", "Test User"]).current_dir(&clone_path).status().await.unwrap();
+
+        // commit
+        tokio::fs::write(clone_path.join("README.md"), "# Test").await.unwrap();
+        Command::new("git").args(["add", "."]).current_dir(&clone_path).status().await.unwrap();
+        Command::new("git").args(["commit", "-m", "Init"]).current_dir(&clone_path).status().await.unwrap();
+        Command::new("git").args(["push", "origin", "main"]).current_dir(&clone_path).status().await.unwrap();
+
+        let env = Environment {
+            name: "test-env".to_string(),
+            directory: base_path,
+        };
+
+        (temp_dir, env)
+    }
+
+    #[tokio::test]
+    async fn test_merge_task_success() {
+        let (_temp_dir, env) = setup_test_env().await;
+        
+        // Create state
+        let config = EnvironmentConfig {
+            environments: vec![env.clone()],
+        };
+        let state = AppState::with_config(config);
+
+        // Create task and feature branch worktree
+        let feature_branch = "feature/test-merge";
+        let worktree_path = env.create_worktree_from_base("main", feature_branch).await.unwrap();
+        
+        // config user in worktree
+        Command::new("git").args(["config", "user.email", "test@example.com"]).current_dir(&worktree_path).status().await.unwrap();
+        Command::new("git").args(["config", "user.name", "Test User"]).current_dir(&worktree_path).status().await.unwrap();
+
+        let task = Task::new(
+            AgentKind::Codex,
+            env.name.clone(),
+            Some("main".to_string()),
+            feature_branch.to_string(),
+            worktree_path.clone(),
+        );
+        state.insert_task(task.clone()).await.unwrap();
+
+        // Make a change in feature branch
+        tokio::fs::write(worktree_path.join("new_feature.txt"), "Feature content").await.unwrap();
+        Command::new("git").args(["add", "."]).current_dir(&worktree_path).status().await.unwrap();
+        Command::new("git").args(["commit", "-m", "Add feature"]).current_dir(&worktree_path).status().await.unwrap();
+
+        // Call merge
+        let res = merge_task(task.id.to_string(), state.clone()).await.unwrap();
+        let resp = res.into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Verify merge in main worktree
+        let main_worktree = env.worktree_path("main");
+        assert!(main_worktree.exists());
+        assert!(main_worktree.join("new_feature.txt").exists());
+        
+        let content = tokio::fs::read_to_string(main_worktree.join("new_feature.txt")).await.unwrap();
+        assert_eq!(content, "Feature content");
+    }
+
+    #[tokio::test]
+    async fn test_merge_fails_unstaged_changes() {
+        let (_temp_dir, env) = setup_test_env().await;
+        
+        let config = EnvironmentConfig {
+            environments: vec![env.clone()],
+        };
+        let state = AppState::with_config(config);
+
+        let feature_branch = "feature/test-dirty";
+        let worktree_path = env.create_worktree_from_base("main", feature_branch).await.unwrap();
+
+        let task = Task::new(
+            AgentKind::Codex,
+            env.name.clone(),
+            Some("main".to_string()),
+            feature_branch.to_string(),
+            worktree_path.clone(),
+        );
+        state.insert_task(task.clone()).await.unwrap();
+
+        // Make a dirty change
+        tokio::fs::write(worktree_path.join("dirty.txt"), "Dirty").await.unwrap();
+
+        // Call merge
+        let res = merge_task(task.id.to_string(), state.clone()).await.unwrap();
+        let resp = res.into_response();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+}
+

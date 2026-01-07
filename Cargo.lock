@@ -3111,6 +3111,7 @@ dependencies = [
  "serde",
  "serde_json",
  "slopcoder-core",
+ "tempfile",
  "thiserror 2.0.17",
  "tokio",
  "tokio-stream",

@@ -73,6 +73,12 @@ export async function getTaskDiff(taskId: string): Promise<TaskDiffResponse> {
   return fetchJson(`/api/tasks/${taskId}/diff`);
 }
 
+export async function mergeTask(taskId: string): Promise<{ status: string; message: string }> {
+  return fetchJson(`/api/tasks/${taskId}/merge`, {
+    method: "POST",
+  });
+}
+
 // WebSocket for streaming events
 export function subscribeToTask(
   taskId: string,

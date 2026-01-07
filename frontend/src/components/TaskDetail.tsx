@@ -8,7 +8,7 @@ import {
   Show,
 } from "solid-js";
 import { useParams, A } from "@solidjs/router";
-import { getTask, sendPrompt, subscribeToTask, getTaskOutput, getTaskDiff } from "../api/client";
+import { getTask, sendPrompt, subscribeToTask, getTaskOutput, getTaskDiff, mergeTask } from "../api/client";
 import type { Task, AgentEvent, CompletedItem } from "../types";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
@@ -709,6 +709,8 @@ export default function TaskDetail() {
   );
   const [newPrompt, setNewPrompt] = createSignal("");
   const [sending, setSending] = createSignal(false);
+  const [merging, setMerging] = createSignal(false);
+  const [mergeMessage, setMergeMessage] = createSignal<{ text: string; type: "success" | "error" } | null>(null);
   const [error, setError] = createSignal("");
 
   let outputRef: HTMLDivElement | undefined;
@@ -789,6 +791,33 @@ export default function TaskDetail() {
         </A>
         <Show when={task()}>
           <h1 class="text-xl font-bold text-gray-900 dark:text-gray-100 flex-1">{task()!.feature_branch}</h1>
+          
+          <button
+            onClick={async () => {
+              if (merging()) return;
+              if (!confirm(`Merge ${task()!.feature_branch} into ${task()!.base_branch || "main"}?`)) return;
+              
+              setMerging(true);
+              setMergeMessage(null);
+              try {
+                const res = await mergeTask(task()!.id);
+                setMergeMessage({ text: res.message, type: "success" });
+              } catch (e) {
+                setMergeMessage({ text: e instanceof Error ? e.message : "Merge failed", type: "error" });
+              } finally {
+                setMerging(false);
+              }
+            }}
+            disabled={merging() || task()!.status === "running"}
+            class={`px-3 py-1 text-sm font-medium text-white rounded-md transition-colors ${
+              merging() || task()!.status === "running"
+                ? "bg-purple-400 cursor-not-allowed"
+                : "bg-purple-600 hover:bg-purple-700"
+            }`}
+          >
+            {merging() ? "Merging..." : "Merge"}
+          </button>
+          
           <StatusBadge status={task()!.status} />
         </Show>
       </div>
@@ -800,6 +829,16 @@ export default function TaskDetail() {
       <Show when={task.error}>
         <div class="p-4 bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-200 rounded-lg border border-red-300 dark:border-red-700">
           Error: {task.error?.message}
+        </div>
+      </Show>
+
+      <Show when={mergeMessage()}>
+        <div class={`p-4 mb-4 rounded-lg border ${
+          mergeMessage()!.type === "success" 
+            ? "bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-200 border-green-300 dark:border-green-700"
+            : "bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-200 border-red-300 dark:border-red-700"
+        }`}>
+          {mergeMessage()!.text}
         </div>
       </Show>
 
