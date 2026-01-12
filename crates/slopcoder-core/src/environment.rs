@@ -41,8 +41,8 @@ pub enum EnvironmentError {
     #[error("Worktree already exists at {0}")]
     WorktreeExists(PathBuf),
 
-    #[error("New environments directory not configured")]
-    NewEnvDirNotConfigured,
+    #[error("New environments directory does not exist or is not a directory: {0}")]
+    NewEnvDirInvalid(PathBuf),
 
     #[error("Failed to initialize git repository: {0}")]
     GitInitError(String),
@@ -52,8 +52,7 @@ pub enum EnvironmentError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnvironmentConfig {
     /// Directory where new environments are created.
-    #[serde(default)]
-    pub new_environments_directory: Option<PathBuf>,
+    pub new_environments_directory: PathBuf,
     pub environments: Vec<Environment>,
 }
 
@@ -69,6 +68,15 @@ impl EnvironmentConfig {
     pub fn from_yaml(yaml: &str) -> Result<Self, EnvironmentError> {
         let config: EnvironmentConfig = serde_yaml::from_str(yaml)?;
         Ok(config)
+    }
+
+    /// Validate the new_environments_directory exists and is a directory.
+    pub async fn validate_new_environments_directory(&self) -> Result<(), EnvironmentError> {
+        let path = &self.new_environments_directory;
+        match tokio::fs::metadata(path).await {
+            Ok(meta) if meta.is_dir() => Ok(()),
+            _ => Err(EnvironmentError::NewEnvDirInvalid(path.clone())),
+        }
     }
 
     /// Find an environment by name.
@@ -103,14 +111,8 @@ impl EnvironmentConfig {
             return Err(EnvironmentError::AlreadyExists(name.to_string()));
         }
 
-        // Get the new environments directory
-        let new_env_dir = self
-            .new_environments_directory
-            .as_ref()
-            .ok_or(EnvironmentError::NewEnvDirNotConfigured)?;
-
         // Create the environment directory
-        let env_dir = new_env_dir.join(name);
+        let env_dir = self.new_environments_directory.join(name);
         tokio::fs::create_dir_all(&env_dir)
             .await
             .map_err(|e| EnvironmentError::GitInitError(e.to_string()))?;
@@ -372,6 +374,7 @@ mod tests {
     use super::*;
 
     const SAMPLE_CONFIG: &str = r#"
+new_environments_directory: "/tmp/new-envs"
 environments:
   - name: "test-project"
     directory: "/tmp/test-project"

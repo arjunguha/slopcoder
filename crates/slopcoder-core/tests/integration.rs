@@ -278,6 +278,7 @@ async fn test_task_with_environment() {
 #[tokio::test]
 async fn test_config_loading() {
     let yaml = r#"
+new_environments_directory: "/tmp/new-envs"
 environments:
   - name: "test-project"
     directory: "/tmp/test-project"

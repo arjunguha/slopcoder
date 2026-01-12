@@ -33,6 +33,9 @@ pub enum StateError {
 /// Errors that can occur during startup validation.
 #[derive(Debug, Error)]
 pub enum StartupError {
+    #[error("New environments directory validation failed: {0}")]
+    NewEnvDirValidation(EnvironmentError),
+
     #[error("Environment '{name}' failed validation: {source}")]
     EnvironmentValidation {
         name: String,
@@ -78,6 +81,11 @@ impl AppState {
         branch_model: String,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let config = EnvironmentConfig::load(&config_path).await?;
+
+        // Validate new environments directory exists and is a directory
+        if let Err(err) = config.validate_new_environments_directory().await {
+            return Err(Box::new(StartupError::NewEnvDirValidation(err)));
+        }
 
         for env in &config.environments {
             if let Err(err) = env.validate().await {
@@ -358,10 +366,5 @@ impl AppState {
         }
 
         Ok(env)
-    }
-
-    /// Check if new environments can be created (directory is configured).
-    pub async fn can_create_new_environments(&self) -> bool {
-        self.inner.read().await.config.new_environments_directory.is_some()
     }
 }

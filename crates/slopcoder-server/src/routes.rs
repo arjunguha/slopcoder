@@ -69,7 +69,6 @@ struct EnvironmentResponse {
 
 async fn list_environments(state: AppState) -> Result<impl Reply, Infallible> {
     let config = state.get_config().await;
-    let can_create_new = state.can_create_new_environments().await;
     let environments: Vec<EnvironmentResponse> = config
         .environments
         .iter()
@@ -79,10 +78,7 @@ async fn list_environments(state: AppState) -> Result<impl Reply, Infallible> {
         })
         .collect();
 
-    Ok(warp::reply::json(&serde_json::json!({
-        "environments": environments,
-        "can_create_new": can_create_new,
-    })))
+    Ok(warp::reply::json(&environments))
 }
 
 #[derive(Deserialize)]
@@ -126,7 +122,6 @@ async fn create_environment(
         Err(e) => {
             let status = match &e {
                 slopcoder_core::environment::EnvironmentError::AlreadyExists(_) => StatusCode::CONFLICT,
-                slopcoder_core::environment::EnvironmentError::NewEnvDirNotConfigured => StatusCode::BAD_REQUEST,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
             Ok(warp::reply::with_status(
@@ -1231,7 +1226,7 @@ mod tests {
 
         // Create state
         let config = EnvironmentConfig {
-            new_environments_directory: None,
+            new_environments_directory: std::env::temp_dir(),
             environments: vec![env.clone()],
         };
         let state = AppState::with_config(config);
@@ -1277,7 +1272,7 @@ mod tests {
         let (_temp_dir, env) = setup_test_env().await;
 
         let config = EnvironmentConfig {
-            new_environments_directory: None,
+            new_environments_directory: std::env::temp_dir(),
             environments: vec![env.clone()],
         };
         let state = AppState::with_config(config);
