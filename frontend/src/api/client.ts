@@ -4,6 +4,7 @@ import type {
   Task,
   CreateTaskRequest,
   CreateTaskResponse,
+  CreateEnvironmentRequest,
   SendPromptRequest,
   AgentEvent,
   TaskOutputResponse,
@@ -33,6 +34,13 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
 // Environment endpoints
 export async function listEnvironments(): Promise<Environment[]> {
   return fetchJson("/api/environments");
+}
+
+export async function createEnvironment(req: CreateEnvironmentRequest): Promise<Environment> {
+  return fetchJson("/api/environments", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
 }
 
 export async function listBranches(envName: string): Promise<string[]> {

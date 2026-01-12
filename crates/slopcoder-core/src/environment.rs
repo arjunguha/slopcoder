@@ -20,6 +20,9 @@ pub enum EnvironmentError {
     #[error("Environment '{0}' not found")]
     NotFound(String),
 
+    #[error("Environment '{0}' already exists")]
+    AlreadyExists(String),
+
     #[error("Bare repository not found at {0}")]
     BareRepoNotFound(PathBuf),
 
@@ -37,11 +40,20 @@ pub enum EnvironmentError {
 
     #[error("Worktree already exists at {0}")]
     WorktreeExists(PathBuf),
+
+    #[error("New environments directory not configured")]
+    NewEnvDirNotConfigured,
+
+    #[error("Failed to initialize git repository: {0}")]
+    GitInitError(String),
 }
 
 /// Configuration file format for environments.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnvironmentConfig {
+    /// Directory where new environments are created.
+    #[serde(default)]
+    pub new_environments_directory: Option<PathBuf>,
     pub environments: Vec<Environment>,
 }
 
@@ -62,6 +74,146 @@ impl EnvironmentConfig {
     /// Find an environment by name.
     pub fn find(&self, name: &str) -> Option<&Environment> {
         self.environments.iter().find(|e| e.name == name)
+    }
+
+    /// Add a new environment to the configuration.
+    pub fn add_environment(&mut self, env: Environment) -> Result<(), EnvironmentError> {
+        if self.find(&env.name).is_some() {
+            return Err(EnvironmentError::AlreadyExists(env.name));
+        }
+        self.environments.push(env);
+        Ok(())
+    }
+
+    /// Save configuration to a YAML file.
+    pub async fn save(&self, path: impl AsRef<Path>) -> Result<(), EnvironmentError> {
+        let content = serde_yaml::to_string(self)?;
+        tokio::fs::write(path, content).await?;
+        Ok(())
+    }
+
+    /// Initialize a new environment with a bare git repository.
+    /// Returns the created Environment.
+    pub async fn initialize_new_environment(
+        &mut self,
+        name: &str,
+    ) -> Result<Environment, EnvironmentError> {
+        // Check if environment already exists
+        if self.find(name).is_some() {
+            return Err(EnvironmentError::AlreadyExists(name.to_string()));
+        }
+
+        // Get the new environments directory
+        let new_env_dir = self
+            .new_environments_directory
+            .as_ref()
+            .ok_or(EnvironmentError::NewEnvDirNotConfigured)?;
+
+        // Create the environment directory
+        let env_dir = new_env_dir.join(name);
+        tokio::fs::create_dir_all(&env_dir)
+            .await
+            .map_err(|e| EnvironmentError::GitInitError(e.to_string()))?;
+
+        // Create bare repository
+        let bare_path = env_dir.join("bare");
+        tokio::fs::create_dir_all(&bare_path)
+            .await
+            .map_err(|e| EnvironmentError::GitInitError(e.to_string()))?;
+
+        let output = Command::new("git")
+            .args(["init", "--bare", "--initial-branch=main"])
+            .current_dir(&bare_path)
+            .output()
+            .await
+            .map_err(|e| EnvironmentError::GitInitError(e.to_string()))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(EnvironmentError::GitInitError(stderr.to_string()));
+        }
+
+        // Clone, make initial commit, and push
+        let temp_clone = env_dir.join("temp_clone");
+        let output = Command::new("git")
+            .args(["clone", bare_path.to_str().unwrap(), temp_clone.to_str().unwrap()])
+            .output()
+            .await
+            .map_err(|e| EnvironmentError::GitInitError(e.to_string()))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(EnvironmentError::GitInitError(format!("Clone failed: {}", stderr)));
+        }
+
+        // Configure git user
+        let _ = Command::new("git")
+            .args(["config", "user.email", "slopcoder@example.com"])
+            .current_dir(&temp_clone)
+            .output()
+            .await;
+
+        let _ = Command::new("git")
+            .args(["config", "user.name", "Slopcoder"])
+            .current_dir(&temp_clone)
+            .output()
+            .await;
+
+        // Create initial README
+        tokio::fs::write(temp_clone.join("README.md"), format!("# {}\n\nCreated by Slopcoder.\n", name))
+            .await
+            .map_err(|e| EnvironmentError::GitInitError(e.to_string()))?;
+
+        // Add and commit
+        let output = Command::new("git")
+            .args(["add", "."])
+            .current_dir(&temp_clone)
+            .output()
+            .await
+            .map_err(|e| EnvironmentError::GitInitError(e.to_string()))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(EnvironmentError::GitInitError(format!("Add failed: {}", stderr)));
+        }
+
+        let output = Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(&temp_clone)
+            .output()
+            .await
+            .map_err(|e| EnvironmentError::GitInitError(e.to_string()))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(EnvironmentError::GitInitError(format!("Commit failed: {}", stderr)));
+        }
+
+        // Push to origin
+        let output = Command::new("git")
+            .args(["push", "origin", "main"])
+            .current_dir(&temp_clone)
+            .output()
+            .await
+            .map_err(|e| EnvironmentError::GitInitError(e.to_string()))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(EnvironmentError::GitInitError(format!("Push failed: {}", stderr)));
+        }
+
+        // Remove temp clone
+        let _ = tokio::fs::remove_dir_all(&temp_clone).await;
+
+        // Create environment and add to config
+        let env = Environment {
+            name: name.to_string(),
+            directory: env_dir,
+        };
+
+        self.environments.push(env.clone());
+
+        Ok(env)
     }
 }
 

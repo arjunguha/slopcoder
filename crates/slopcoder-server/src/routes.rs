@@ -47,12 +47,18 @@ fn environments_routes(
         .and(with_state(state.clone()))
         .and_then(list_environments);
 
+    let create = warp::path::end()
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(with_state(state.clone()))
+        .and_then(create_environment);
+
     let branches = warp::path!(String / "branches")
         .and(warp::get())
         .and(with_state(state.clone()))
         .and_then(list_branches);
 
-    list.or(branches)
+    list.or(create).or(branches)
 }
 
 #[derive(Serialize)]
@@ -63,6 +69,7 @@ struct EnvironmentResponse {
 
 async fn list_environments(state: AppState) -> Result<impl Reply, Infallible> {
     let config = state.get_config().await;
+    let can_create_new = state.can_create_new_environments().await;
     let environments: Vec<EnvironmentResponse> = config
         .environments
         .iter()
@@ -72,7 +79,64 @@ async fn list_environments(state: AppState) -> Result<impl Reply, Infallible> {
         })
         .collect();
 
-    Ok(warp::reply::json(&environments))
+    Ok(warp::reply::json(&serde_json::json!({
+        "environments": environments,
+        "can_create_new": can_create_new,
+    })))
+}
+
+#[derive(Deserialize)]
+struct CreateEnvironmentRequest {
+    name: String,
+}
+
+async fn create_environment(
+    req: CreateEnvironmentRequest,
+    state: AppState,
+) -> Result<impl Reply, Infallible> {
+    let name = req.name.trim();
+
+    if name.is_empty() {
+        return Ok(warp::reply::with_status(
+            warp::reply::json(&ErrorResponse {
+                error: "Environment name cannot be empty".to_string(),
+            }),
+            StatusCode::BAD_REQUEST,
+        ));
+    }
+
+    // Validate name (alphanumeric, hyphens, underscores only)
+    if !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return Ok(warp::reply::with_status(
+            warp::reply::json(&ErrorResponse {
+                error: "Environment name can only contain letters, numbers, hyphens, and underscores".to_string(),
+            }),
+            StatusCode::BAD_REQUEST,
+        ));
+    }
+
+    match state.create_new_environment(name).await {
+        Ok(env) => Ok(warp::reply::with_status(
+            warp::reply::json(&EnvironmentResponse {
+                name: env.name,
+                directory: env.directory.to_string_lossy().to_string(),
+            }),
+            StatusCode::CREATED,
+        )),
+        Err(e) => {
+            let status = match &e {
+                slopcoder_core::environment::EnvironmentError::AlreadyExists(_) => StatusCode::CONFLICT,
+                slopcoder_core::environment::EnvironmentError::NewEnvDirNotConfigured => StatusCode::BAD_REQUEST,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            Ok(warp::reply::with_status(
+                warp::reply::json(&ErrorResponse {
+                    error: e.to_string(),
+                }),
+                status,
+            ))
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -275,7 +339,8 @@ async fn get_task(id: String, state: AppState) -> Result<impl Reply, Infallible>
 #[derive(Deserialize)]
 struct CreateTaskRequest {
     environment: String,
-    base_branch: String,
+    /// Base branch to create the feature branch from. Defaults to "main" if not specified.
+    base_branch: Option<String>,
     feature_branch: Option<String>,
     prompt: String,
     #[serde(default)]
@@ -304,6 +369,14 @@ async fn create_task(
         ));
     };
 
+    // Use "main" as default base branch if not specified
+    let base_branch = req.base_branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("main")
+        .to_string();
+
     let feature_branch = match req
         .feature_branch
         .as_deref()
@@ -330,7 +403,7 @@ async fn create_task(
 
     // Create a new feature branch worktree
     let worktree_path = match env
-        .create_worktree_from_base(&req.base_branch, &feature_branch)
+        .create_worktree_from_base(&base_branch, &feature_branch)
         .await
     {
         Ok(path) => path,
@@ -355,7 +428,7 @@ async fn create_task(
     let task = Task::new(
         req.agent.unwrap_or_default(),
         req.environment,
-        Some(req.base_branch),
+        Some(base_branch),
         feature_branch,
         worktree_path.clone(),
     );
@@ -1155,9 +1228,10 @@ mod tests {
     #[tokio::test]
     async fn test_merge_task_success() {
         let (_temp_dir, env) = setup_test_env().await;
-        
+
         // Create state
         let config = EnvironmentConfig {
+            new_environments_directory: None,
             environments: vec![env.clone()],
         };
         let state = AppState::with_config(config);
@@ -1201,8 +1275,9 @@ mod tests {
     #[tokio::test]
     async fn test_merge_fails_unstaged_changes() {
         let (_temp_dir, env) = setup_test_env().await;
-        
+
         let config = EnvironmentConfig {
+            new_environments_directory: None,
             environments: vec![env.clone()],
         };
         let state = AppState::with_config(config);

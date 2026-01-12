@@ -1,3 +1,6 @@
+# Directory where new environments are created
+new_environments_directory: "/tmp/slopcoder-environments"
+
 environments:
   - name: "MultiPL-E"
     directory: "/scratch/arjun-nosudo/repos/nuprl/MultiPL-E"

@@ -9,6 +9,10 @@ export interface BranchesResponse {
   branches: string[];
 }
 
+export interface CreateEnvironmentRequest {
+  name: string;
+}
+
 export interface PromptRun {
   prompt: string;
   started_at: string;
@@ -31,7 +35,7 @@ export interface Task {
 
 export interface CreateTaskRequest {
   environment: string;
-  base_branch: string;
+  base_branch?: string;
   feature_branch?: string;
   prompt: string;
   agent: AgentKind;

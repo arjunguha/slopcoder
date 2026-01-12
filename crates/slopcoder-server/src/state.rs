@@ -339,4 +339,29 @@ impl AppState {
             let _ = tx.send(event);
         }
     }
+
+    /// Create a new environment with a fresh git repository.
+    pub async fn create_new_environment(
+        &self,
+        name: &str,
+    ) -> Result<slopcoder_core::environment::Environment, EnvironmentError> {
+        let mut inner = self.inner.write().await;
+
+        let env = inner.config.initialize_new_environment(name).await?;
+
+        // Register the new environment with the task store
+        inner.tasks.register_environment(env.name.clone(), env.directory.clone());
+
+        // Save the updated config to disk
+        if !inner.config_path.as_os_str().is_empty() {
+            inner.config.save(&inner.config_path).await?;
+        }
+
+        Ok(env)
+    }
+
+    /// Check if new environments can be created (directory is configured).
+    pub async fn can_create_new_environments(&self) -> bool {
+        self.inner.read().await.config.new_environments_directory.is_some()
+    }
 }
