@@ -13,15 +13,58 @@ import type {
 
 // Use relative URLs so the app works from any host
 const API_BASE = import.meta.env.VITE_API_URL || "";
+const PASSWORD_STORAGE_KEY = "slopcoderPassword";
+let cachedPassword: string | null =
+  typeof window === "undefined" ? null : window.localStorage.getItem(PASSWORD_STORAGE_KEY);
 
-async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
+function setStoredPassword(password: string) {
+  cachedPassword = password;
+  window.localStorage.setItem(PASSWORD_STORAGE_KEY, password);
+}
+
+function clearStoredPassword() {
+  cachedPassword = null;
+  window.localStorage.removeItem(PASSWORD_STORAGE_KEY);
+}
+
+function promptForPassword(): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const password = window.prompt("Enter Slopcoder password:");
+  if (password === null) {
+    return null;
+  }
+  setStoredPassword(password);
+  return password;
+}
+
+function buildHeaders(options?: RequestInit): HeadersInit {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (options?.headers) {
+    Object.assign(headers, options.headers as HeadersInit);
+  }
+  if (cachedPassword) {
+    headers["X-Slopcoder-Password"] = cachedPassword;
+  }
+  return headers;
+}
+
+async function fetchJson<T>(url: string, options?: RequestInit, retry = true): Promise<T> {
   const response = await fetch(`${API_BASE}${url}`, {
     ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options?.headers,
-    },
+    headers: buildHeaders(options),
   });
+
+  if (response.status === 401 && retry) {
+    clearStoredPassword();
+    const password = promptForPassword();
+    if (password) {
+      return fetchJson<T>(url, options, false);
+    }
+  }
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: "Unknown error" }));
@@ -96,7 +139,8 @@ export function subscribeToTask(
   // Build WebSocket URL from current location
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const wsUrl = `${protocol}//${window.location.host}`;
-  const ws = new WebSocket(`${wsUrl}/api/tasks/${taskId}/stream`);
+  const passwordQuery = cachedPassword ? `?password=${encodeURIComponent(cachedPassword)}` : "";
+  const ws = new WebSocket(`${wsUrl}/api/tasks/${taskId}/stream${passwordQuery}`);
 
   ws.onmessage = (event) => {
     try {

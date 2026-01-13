@@ -68,6 +68,8 @@ struct AppStateInner {
     agent_config: AnyAgentConfig,
     /// Model name for feature branch generation.
     branch_model: String,
+    /// Optional password for API access.
+    auth_password: Option<String>,
     /// Path to environments config file.
     #[allow(dead_code)]
     config_path: PathBuf,
@@ -79,6 +81,7 @@ impl AppState {
     pub async fn new(
         config_path: PathBuf,
         branch_model: String,
+        auth_password: Option<String>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let config = EnvironmentConfig::load(&config_path).await?;
 
@@ -125,6 +128,7 @@ impl AppState {
                 interrupt_channels: HashMap::new(),
                 agent_config: AnyAgentConfig::default(),
                 branch_model,
+                auth_password,
                 config_path,
             })),
         })
@@ -146,6 +150,7 @@ impl AppState {
                 interrupt_channels: HashMap::new(),
                 agent_config: AnyAgentConfig::default(),
                 branch_model: "claude-haiku-4-5".to_string(),
+                auth_password: None,
                 config_path: PathBuf::new(),
             })),
         }
@@ -199,6 +204,11 @@ impl AppState {
     /// Get the model used for branch name generation.
     pub async fn get_branch_model(&self) -> String {
         self.inner.read().await.branch_model.clone()
+    }
+
+    /// Get the configured API password, if any.
+    pub async fn get_auth_password(&self) -> Option<String> {
+        self.inner.read().await.auth_password.clone()
     }
 
     /// List all tasks, cleaning up any with missing worktrees.

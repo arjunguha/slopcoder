@@ -13,18 +13,23 @@ use std::convert::Infallible;
 use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
-use warp::{http::StatusCode, Filter, Reply};
+use warp::{http::{Method, StatusCode}, Filter, Reply};
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
+#[derive(Debug)]
+struct AuthError;
+
+impl warp::reject::Reject for AuthError {}
+
 /// Create all API routes.
 pub fn routes(
     state: AppState,
-) -> impl Filter<Extract = (impl Reply,), Error = warp::Rejection> + Clone {
-    let api = warp::path("api");
+) -> impl Filter<Extract = (impl Reply,), Error = Infallible> + Clone {
+    let api = warp::path("api").and(auth_filter(state.clone()));
 
-    let environments = api
+    let environments = api.clone()
         .and(warp::path("environments"))
         .and(environments_routes(state.clone()));
 
@@ -32,7 +37,7 @@ pub fn routes(
         .and(warp::path("tasks"))
         .and(tasks_routes(state.clone()));
 
-    environments.or(tasks)
+    environments.or(tasks).recover(handle_rejection)
 }
 
 // ============================================================================
@@ -1061,6 +1066,81 @@ fn with_state(
     warp::any().map(move || state.clone())
 }
 
+fn auth_filter(state: AppState) -> impl Filter<Extract = (), Error = warp::Rejection> + Clone {
+    warp::any()
+        .and(with_state(state))
+        .and(warp::method())
+        .and(warp::header::optional::<String>("x-slopcoder-password"))
+        .and(warp::query::raw())
+        .and_then(check_auth)
+        .untuple_one()
+}
+
+async fn check_auth(
+    state: AppState,
+    method: Method,
+    header_password: Option<String>,
+    raw_query: String,
+) -> Result<(), warp::Rejection> {
+    if method == Method::OPTIONS {
+        return Ok(());
+    }
+    let required = state.get_auth_password().await;
+    if let Some(required) = required {
+        let query_password = extract_password_from_query(&raw_query);
+        let provided = header_password.or(query_password);
+        if provided.as_deref() != Some(required.as_str()) {
+            return Err(warp::reject::custom(AuthError));
+        }
+    }
+    Ok(())
+}
+
+fn extract_password_from_query(raw_query: &str) -> Option<String> {
+    if raw_query.is_empty() {
+        return None;
+    }
+
+    for pair in raw_query.split('&') {
+        let mut parts = pair.splitn(2, '=');
+        let key = parts.next().unwrap_or("");
+        let decoded_key = urlencoding::decode(key).ok()?;
+        if decoded_key == "password" {
+            let value = parts.next().unwrap_or("");
+            return urlencoding::decode(value).ok().map(|v| v.into_owned());
+        }
+    }
+
+    None
+}
+
+async fn handle_rejection(err: warp::Rejection) -> Result<impl Reply, Infallible> {
+    if err.find::<AuthError>().is_some() {
+        return Ok(warp::reply::with_status(
+            warp::reply::json(&ErrorResponse {
+                error: "Unauthorized".to_string(),
+            }),
+            StatusCode::UNAUTHORIZED,
+        ));
+    }
+
+    if err.is_not_found() {
+        return Ok(warp::reply::with_status(
+            warp::reply::json(&ErrorResponse {
+                error: "Not Found".to_string(),
+            }),
+            StatusCode::NOT_FOUND,
+        ));
+    }
+
+    Ok(warp::reply::with_status(
+        warp::reply::json(&ErrorResponse {
+            error: "Internal Server Error".to_string(),
+        }),
+        StatusCode::INTERNAL_SERVER_ERROR,
+    ))
+}
+
 fn task_output_path(env_dir: &Path, task_id: TaskId) -> PathBuf {
     env_dir.join(format!("task-{}.jsonl", task_id))
 }
@@ -1298,4 +1378,3 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::CONFLICT);
     }
 }
-

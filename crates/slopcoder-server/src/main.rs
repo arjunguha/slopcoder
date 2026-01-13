@@ -1,6 +1,7 @@
 mod routes;
 mod state;
 
+use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -22,6 +23,7 @@ async fn main() {
     let mut addr_arg: Option<String> = None;
     let mut static_dir_arg: Option<PathBuf> = None;
     let mut branch_model = "claude-haiku-4-5".to_string();
+    let mut password_prompt = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -36,9 +38,12 @@ async fn main() {
                     branch_model = value;
                 }
             }
+            "--password-prompt" => {
+                password_prompt = true;
+            }
             "-h" | "--help" => {
                 println!(
-                    "Usage: slopcoder-server [config.yaml] [--addr HOST:PORT] [--static-dir PATH] [--branch-model MODEL]\n\
+                    "Usage: slopcoder-server [config.yaml] [--addr HOST:PORT] [--static-dir PATH] [--branch-model MODEL] [--password-prompt]\n\
 Defaults: config=environments.yaml, addr=127.0.0.1:8080, static-dir=frontend/dist, branch-model=claude-haiku-4-5"
                 );
                 return;
@@ -52,6 +57,23 @@ Defaults: config=environments.yaml, addr=127.0.0.1:8080, static-dir=frontend/dis
     }
 
     let config_path = config_path.unwrap_or_else(|| PathBuf::from("environments.yaml"));
+    let auth_password = if password_prompt {
+        print!("Enter password: ");
+        io::stdout().flush().expect("Failed to flush stdout");
+        let mut input = String::new();
+        io::stdin()
+            .read_line(&mut input)
+            .expect("Failed to read password");
+        let trimmed = input.trim_end_matches(&['\r', '\n'][..]).to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            println!("Password set to: {}", trimmed);
+            Some(trimmed)
+        }
+    } else {
+        None
+    };
 
     let api_key = std::env::var("OPENAI_API_KEY")
         .ok()
@@ -69,7 +91,9 @@ Defaults: config=environments.yaml, addr=127.0.0.1:8080, static-dir=frontend/dis
     // Check if config exists
     if !config_path.exists() {
         tracing::error!("Config file not found: {}", config_path.display());
-        tracing::info!("Usage: slopcoder-server [config.yaml] [--addr HOST:PORT] [--static-dir PATH]");
+        tracing::info!(
+            "Usage: slopcoder-server [config.yaml] [--addr HOST:PORT] [--static-dir PATH] [--branch-model MODEL] [--password-prompt]"
+        );
         tracing::info!("Example config:");
         tracing::info!(
             r#"
@@ -82,7 +106,7 @@ environments:
     }
 
     // Load state
-    let state = match AppState::new(config_path.clone(), branch_model).await {
+    let state = match AppState::new(config_path.clone(), branch_model, auth_password).await {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("Startup checks failed: {}", e);
@@ -114,7 +138,7 @@ environments:
     let cors = warp::cors()
         .allow_any_origin()
         .allow_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
-        .allow_headers(vec!["Content-Type"]);
+        .allow_headers(vec!["Content-Type", "X-Slopcoder-Password"]);
 
     let api_routes = api_routes.with(cors);
 
