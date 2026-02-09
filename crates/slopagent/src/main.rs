@@ -1,7 +1,7 @@
 mod state;
 
 use futures::{SinkExt, StreamExt};
-use http::{Method, Request, StatusCode};
+use http::StatusCode;
 use slopcoder_core::{
     agent_rpc::{AgentCreateTaskRequest, AgentEnvelope, AgentRequest, AgentResponse},
     anyagent::{resume_anyagent, spawn_anyagent},
@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 use tokio_tungstenite::{
     connect_async,
-    tungstenite::{self, Message},
+    tungstenite::{self, client::IntoClientRequest, Message},
 };
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use uuid::Uuid;
@@ -181,11 +181,15 @@ async fn run_connection(
     hostname: String,
     display_name: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut builder = Request::builder().uri(server_url).method(Method::GET);
+    let mut request = server_url.into_client_request()?;
     if let Some(password) = password {
-        builder = builder.header("x-slopcoder-password", password);
+        request.headers_mut().insert(
+            "x-slopcoder-password",
+            password
+                .parse()
+                .map_err(|e| format!("invalid password header: {e}"))?,
+        );
     }
-    let request = builder.body(())?;
     let (ws_stream, _) = connect_async(request).await?;
     let (mut ws_sink, mut ws_stream) = ws_stream.split();
 
