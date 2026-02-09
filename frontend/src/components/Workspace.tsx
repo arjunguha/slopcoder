@@ -160,9 +160,12 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab }) {
     async (id) => (await getTaskOutput(id)).events
   );
   const [diff, { refetch: refetchDiff }] = createResource(() => props.taskId, getTaskDiff);
+  const taskData = createMemo(() => task.latest ?? task());
+  const persistedEvents = createMemo(() => persistedOutput.latest ?? persistedOutput() ?? []);
+  const diffData = createMemo(() => diff.latest ?? diff());
 
   const [liveEvents, setLiveEvents] = createSignal<AgentEvent[]>([]);
-  const allEvents = createMemo(() => [...(persistedOutput() || []), ...liveEvents()]);
+  const allEvents = createMemo(() => [...persistedEvents(), ...liveEvents()]);
   const [prompt, setPrompt] = createSignal("");
   const [sending, setSending] = createSignal(false);
   const [merging, setMerging] = createSignal(false);
@@ -173,7 +176,7 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab }) {
   let promptRef: HTMLTextAreaElement | undefined;
 
   createEffect(() => {
-    const t = task();
+    const t = taskData();
     if (t?.status === "running") {
       const unsubscribe = subscribeToTask(
         t.id,
@@ -195,7 +198,7 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab }) {
   });
 
   createEffect(() => {
-    const t = task();
+    const t = taskData();
     if (t?.status === "running") {
       const id = setInterval(() => refetchTask(), 3000);
       onCleanup(() => clearInterval(id));
@@ -222,7 +225,7 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab }) {
 
   return (
     <div class="h-full flex flex-col min-h-0">
-      <Show when={task.loading}>
+      <Show when={task.loading && !taskData()}>
         <div class="text-gray-500 dark:text-gray-400">Loading task...</div>
       </Show>
       <Show when={task.error}>
@@ -230,23 +233,23 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab }) {
           {task.error?.message}
         </div>
       </Show>
-      <Show when={task()}>
+      <Show when={taskData()}>
         <div class="mb-4 flex items-center justify-between gap-3">
           <div>
-            <div class="text-xl font-bold text-gray-900 dark:text-gray-100">{task()!.feature_branch}</div>
+            <div class="text-xl font-bold text-gray-900 dark:text-gray-100">{taskData()!.feature_branch}</div>
             <div class="text-xs text-gray-500 dark:text-gray-400">
-              {task()!.host}/{task()!.environment} • base: {task()!.base_branch || "main"} • agent: {task()!.agent}
+              {taskData()!.host}/{taskData()!.environment} • base: {taskData()!.base_branch || "main"} • agent: {taskData()!.agent}
             </div>
           </div>
           <div class="flex items-center gap-2">
             <button
-              disabled={merging() || task()!.status === "running"}
+              disabled={merging() || taskData()!.status === "running"}
               onClick={async () => {
-                if (!confirm(`Merge ${task()!.feature_branch} into ${task()!.base_branch || "main"}?`)) return;
+                if (!confirm(`Merge ${taskData()!.feature_branch} into ${taskData()!.base_branch || "main"}?`)) return;
                 setMerging(true);
                 setMergeMessage(null);
                 try {
-                  const res = await mergeTask(task()!.id);
+                  const res = await mergeTask(taskData()!.id);
                   setMergeMessage({ type: "success", text: res.message });
                   refetchDiff();
                 } catch (err) {
@@ -262,7 +265,7 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab }) {
             >
               {merging() ? "Merging..." : "Merge"}
             </button>
-            <StatusBadge status={task()!.status} />
+            <StatusBadge status={taskData()!.status} />
           </div>
         </div>
 
@@ -285,12 +288,12 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab }) {
               class="flex-1 min-h-0 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-900 p-4 space-y-3"
             >
               <For each={allEvents()}>{(event) => <EventRow event={event} />}</For>
-              <Show when={task()!.status === "running" && allEvents().length === 0}>
+              <Show when={taskData()!.status === "running" && allEvents().length === 0}>
                 <div class="text-gray-500 dark:text-gray-400 animate-pulse">Waiting for output...</div>
               </Show>
             </div>
 
-            <Show when={task()!.status !== "running"}>
+            <Show when={taskData()!.status !== "running"}>
               <form onSubmit={sendFollowup} class="mt-3 flex gap-2">
                 <textarea
                   ref={promptRef}
@@ -317,14 +320,14 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab }) {
 
         <Show when={props.activeTab() === "diff"}>
           <div class="flex-1 min-h-0">
-            <Show when={diff.loading}>
+            <Show when={diff.loading && !diffData()}>
               <div class="text-gray-500 dark:text-gray-400">Loading diff...</div>
             </Show>
             <Show when={diff.error}>
               <div class="text-red-600 dark:text-red-400">{diff.error?.message}</div>
             </Show>
-            <Show when={diff()}>
-              <DiffViewer staged={diff()!.staged} unstaged={diff()!.unstaged} />
+            <Show when={diffData()}>
+              <DiffViewer staged={diffData()!.staged} unstaged={diffData()!.unstaged} />
             </Show>
           </div>
         </Show>
@@ -577,6 +580,9 @@ export default function Workspace() {
   const [hosts, { refetch: refetchHosts }] = createResource(listHosts);
   const [environments, { refetch: refetchEnvironments }] = createResource(listEnvironments);
   const [tasks, { refetch: refetchTasks }] = createResource(listTasks);
+  const hostsData = createMemo(() => hosts.latest ?? hosts() ?? []);
+  const environmentsData = createMemo(() => environments.latest ?? environments() ?? []);
+  const tasksData = createMemo(() => tasks.latest ?? tasks() ?? []);
   const [expanded, setExpanded] = createSignal<Record<string, boolean>>({});
   const [mode, setMode] = createSignal<RightMode>({ kind: "new-environment" });
   const [tab, setTab] = createSignal<RightTab>("conversation");
@@ -600,7 +606,7 @@ export default function Workspace() {
 
   const tasksByEnvironment = createMemo(() => {
     const grouped: Record<string, Task[]> = {};
-    for (const task of tasks() || []) {
+    for (const task of tasksData()) {
       const key = `${task.host}::${task.environment}`;
       if (!grouped[key]) grouped[key] = [];
       grouped[key].push(task);
@@ -626,11 +632,11 @@ export default function Workspace() {
         <aside class="border-r border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 p-3 overflow-y-auto">
           <div class="mb-4">
             <h1 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Hosts</h1>
-            <Show when={hosts.loading}>
+            <Show when={hosts.loading && hostsData().length === 0}>
               <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Loading hosts...</div>
             </Show>
             <div class="mt-2 space-y-1">
-              <For each={hosts() || []}>
+              <For each={hostsData()}>
                 {(host) => (
                   <div class="rounded border border-gray-200 dark:border-gray-700 px-2 py-1 text-xs text-gray-700 dark:text-gray-300">
                     <div class="font-medium">{host.host}</div>
@@ -640,7 +646,7 @@ export default function Workspace() {
                   </div>
                 )}
               </For>
-              <Show when={!hosts.loading && (hosts() || []).length === 0}>
+              <Show when={!hosts.loading && hostsData().length === 0}>
                 <div class="text-xs text-amber-600 dark:text-amber-400">No connected slopagents.</div>
               </Show>
             </div>
@@ -659,11 +665,11 @@ export default function Workspace() {
             </button>
           </div>
 
-          <Show when={environments.loading}>
+          <Show when={environments.loading && environmentsData().length === 0}>
             <div class="text-xs text-gray-500 dark:text-gray-400">Loading environments...</div>
           </Show>
 
-          <For each={environments() || []}>
+          <For each={environmentsData()}>
             {(env) => (
               <div class="mb-2">
                 <div class="flex items-center justify-between px-2 py-2">

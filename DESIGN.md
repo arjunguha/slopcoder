@@ -285,6 +285,7 @@ Implemented in `frontend/src/components/Workspace.tsx` (`NewTaskPane`).
 
 - `Workspace.tsx` owns host/environment/task fetching and periodic refresh, and renders task selection as a host-aware left tree instead of a separate list page.
 - `TaskPane` within `Workspace.tsx` handles live stream + persisted output rendering, prompt continuation, status display, and merge action.
+- Refresh-driven resources render from their latest successful snapshot (`resource.latest`) so periodic polling does not blank task/chat content or flash loading placeholders once initial data has loaded.
 - Right-pane tab model splits task content into explicit `Conversation` and `Diff` tabs.
 - `DiffViewer.tsx` remains the diff renderer for staged/unstaged changes.
 - Markdown rendering uses explicit light/dark CSS for fenced and inline code blocks to keep code text/background contrast correct under system dark mode.
