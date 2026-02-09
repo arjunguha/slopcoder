@@ -39,7 +39,11 @@ async fn setup_test_env() -> (TempDir, Environment) {
     // Create a temporary clone to make initial commit
     let clone_path = base_path.join("temp_clone");
     let status = Command::new("git")
-        .args(["clone", bare_path.to_str().unwrap(), clone_path.to_str().unwrap()])
+        .args([
+            "clone",
+            bare_path.to_str().unwrap(),
+            clone_path.to_str().unwrap(),
+        ])
         .status()
         .await
         .expect("Failed to clone");
@@ -126,7 +130,11 @@ async fn test_worktree_creation() {
     assert!(result.is_err());
 }
 
-#[cfg(any(feature = "test-codex", feature = "test-claude", feature = "test-cursor"))]
+#[cfg(any(
+    feature = "test-codex",
+    feature = "test-claude",
+    feature = "test-cursor"
+))]
 async fn run_agent_hello_world(kind: AgentKind) {
     let (_temp_dir, env) = setup_test_env().await;
 
@@ -175,7 +183,11 @@ async fn run_agent_hello_world(kind: AgentKind) {
     assert!(content.contains("Hello"), "Content should contain 'Hello'");
 }
 
-#[cfg(any(feature = "test-codex", feature = "test-claude", feature = "test-cursor"))]
+#[cfg(any(
+    feature = "test-codex",
+    feature = "test-claude",
+    feature = "test-cursor"
+))]
 async fn run_agent_resume(kind: AgentKind) {
     let (_temp_dir, env) = setup_test_env().await;
 
@@ -221,7 +233,10 @@ async fn run_agent_resume(kind: AgentKind) {
     let content = tokio::fs::read_to_string(worktree_path.join("hello.txt"))
         .await
         .expect("Should read hello.txt");
-    assert!(content.contains("Goodbye"), "Content should contain 'Goodbye'");
+    assert!(
+        content.contains("Goodbye"),
+        "Content should contain 'Goodbye'"
+    );
 }
 
 #[cfg(feature = "test-codex")]
@@ -289,7 +304,12 @@ environments:
     assert_eq!(config.environments[0].name, "test-project");
 }
 
-#[cfg(any(feature = "test-codex", feature = "test-claude", feature = "test-cursor", feature = "test-opencode"))]
+#[cfg(any(
+    feature = "test-codex",
+    feature = "test-claude",
+    feature = "test-cursor",
+    feature = "test-opencode"
+))]
 async fn run_agent_interrupt(kind: AgentKind) {
     let (_temp_dir, env) = setup_test_env().await;
 
@@ -342,7 +362,12 @@ async fn run_agent_interrupt(kind: AgentKind) {
     }
 }
 
-#[cfg(any(feature = "test-codex", feature = "test-claude", feature = "test-cursor", feature = "test-opencode"))]
+#[cfg(any(
+    feature = "test-codex",
+    feature = "test-claude",
+    feature = "test-cursor",
+    feature = "test-opencode"
+))]
 async fn run_agent_resume_after_interrupt(kind: AgentKind) {
     let (_temp_dir, env) = setup_test_env().await;
 
@@ -402,10 +427,18 @@ async fn run_agent_resume_after_interrupt(kind: AgentKind) {
     let content = tokio::fs::read_to_string(&complete_path)
         .await
         .expect("Should read complete.txt");
-    assert!(content.contains("Completed"), "Content should contain 'Completed'");
+    assert!(
+        content.contains("Completed"),
+        "Content should contain 'Completed'"
+    );
 }
 
-#[cfg(any(feature = "test-codex", feature = "test-claude", feature = "test-cursor", feature = "test-opencode"))]
+#[cfg(any(
+    feature = "test-codex",
+    feature = "test-claude",
+    feature = "test-cursor",
+    feature = "test-opencode"
+))]
 async fn run_agent_double_interrupt(kind: AgentKind) {
     let (_temp_dir, env) = setup_test_env().await;
 
@@ -611,14 +644,9 @@ async fn run_opencode_resume() {
 
     let config = AnyAgentConfig::default();
 
-    let mut agent = spawn_anyagent(
-        AgentKind::Opencode,
-        &config,
-        &worktree_path,
-        "What is 2+2?",
-    )
-    .await
-    .expect("Should spawn agent");
+    let mut agent = spawn_anyagent(AgentKind::Opencode, &config, &worktree_path, "What is 2+2?")
+        .await
+        .expect("Should spawn agent");
 
     while agent.next_event().await.is_some() {}
 

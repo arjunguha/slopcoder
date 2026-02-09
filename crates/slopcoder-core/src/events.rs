@@ -23,9 +23,7 @@ pub enum AgentEvent {
 
     /// An item (message, reasoning, tool call, etc.) has been completed.
     #[serde(rename = "item.completed")]
-    ItemCompleted {
-        item: CompletedItem,
-    },
+    ItemCompleted { item: CompletedItem },
 
     /// The current turn has completed.
     #[serde(rename = "turn.completed")]
@@ -45,9 +43,7 @@ pub enum AgentEvent {
 
     /// Prompt sent to the agent.
     #[serde(rename = "prompt.sent")]
-    PromptSent {
-        prompt: String,
-    },
+    PromptSent { prompt: String },
 
     /// Unknown event type - we capture these to avoid breaking on new event types.
     #[serde(other)]
@@ -99,7 +95,8 @@ impl AgentEvent {
             AgentEvent::BackgroundEvent { event, extra } => {
                 // OpenCode stores session info in BackgroundEvent
                 if event.as_deref() == Some("opencode_session") {
-                    if let Some(session_str) = extra.get("session_string").and_then(|v| v.as_str()) {
+                    if let Some(session_str) = extra.get("session_string").and_then(|v| v.as_str())
+                    {
                         let uuid = opencode_session_string_to_uuid(session_str);
                         return Some((uuid, session_str.to_string()));
                     }
@@ -265,9 +262,7 @@ impl ClaudeStreamEvent {
                     vec![AgentEvent::Unknown]
                 }
             }
-            ClaudeStreamEvent::Assistant { message, .. } => {
-                message.into_events()
-            }
+            ClaudeStreamEvent::Assistant { message, .. } => message.into_events(),
             ClaudeStreamEvent::User {
                 message,
                 tool_use_result,
@@ -488,17 +483,13 @@ impl CursorStreamEvent {
                     vec![AgentEvent::Unknown]
                 }
             }
-            CursorStreamEvent::Assistant { message, .. } => {
-                message.into_events()
-            }
+            CursorStreamEvent::Assistant { message, .. } => message.into_events(),
             CursorStreamEvent::User { .. } => {
                 // User messages are typically prompts, we can ignore or mark as prompt.sent
                 vec![AgentEvent::Unknown]
             }
             CursorStreamEvent::Result { is_error, .. } => {
-                vec![AgentEvent::TurnCompleted {
-                    usage: None,
-                }]
+                vec![AgentEvent::TurnCompleted { usage: None }]
             }
             CursorStreamEvent::Thinking { text, .. } => {
                 if let Some(text) = text {
@@ -890,9 +881,7 @@ impl GeminiStreamEvent {
                 }]
             }
             GeminiStreamEvent::ToolResult {
-                tool_id,
-                output,
-                ..
+                tool_id, output, ..
             } => vec![AgentEvent::ItemCompleted {
                 item: CompletedItem {
                     id: uuid::Uuid::new_v4().to_string(),
@@ -934,15 +923,13 @@ mod tests {
 
     const TURN_COMPLETED_JSON: &str = r#"{"type":"turn.completed","usage":{"input_tokens":4079,"cached_input_tokens":3200,"output_tokens":7}}"#;
 
-    const CLAUDE_SYSTEM_JSON: &str = r#"{"type":"system","subtype":"init","session_id":"6c0b0f60-d9b0-4ee7-9f12-6de09fbfc6d5"}"#;
+    const CLAUDE_SYSTEM_JSON: &str =
+        r#"{"type":"system","subtype":"init","session_id":"6c0b0f60-d9b0-4ee7-9f12-6de09fbfc6d5"}"#;
     const CLAUDE_ASSISTANT_TEXT_JSON: &str =
         r#"{"type":"assistant","message":{"id":"msg_1","content":[{"type":"text","text":"Hi"}]}}"#;
-    const CLAUDE_ASSISTANT_TOOL_JSON: &str =
-        r#"{"type":"assistant","message":{"id":"msg_tool","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]}}"#;
-    const CLAUDE_TOOL_RESULT_JSON: &str =
-        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok","is_error":false}]},"tool_use_result":{"stdout":"ok","stderr":""}}"#;
-    const CLAUDE_RESULT_JSON: &str =
-        r#"{"type":"result","usage":{"input_tokens":3,"cache_read_input_tokens":10,"output_tokens":5}}"#;
+    const CLAUDE_ASSISTANT_TOOL_JSON: &str = r#"{"type":"assistant","message":{"id":"msg_tool","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]}}"#;
+    const CLAUDE_TOOL_RESULT_JSON: &str = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok","is_error":false}]},"tool_use_result":{"stdout":"ok","stderr":""}}"#;
+    const CLAUDE_RESULT_JSON: &str = r#"{"type":"result","usage":{"input_tokens":3,"cache_read_input_tokens":10,"output_tokens":5}}"#;
 
     #[test]
     fn test_parse_thread_started() {

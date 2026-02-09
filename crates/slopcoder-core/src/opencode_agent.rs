@@ -174,8 +174,8 @@ impl OpencodeAgent {
             mappings.insert(uuid.to_string(), session_str.clone());
 
             // Save back
-            let content = serde_json::to_string_pretty(&mappings)
-                .map_err(|e| AgentError::ParseError(e))?;
+            let content =
+                serde_json::to_string_pretty(&mappings).map_err(|e| AgentError::ParseError(e))?;
             tokio::fs::write(&map_path, content).await?;
         }
         Ok(())

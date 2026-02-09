@@ -1,6 +1,13 @@
 // API Types
 
+export interface Host {
+  host: string;
+  hostname: string;
+  connected_at: string;
+}
+
 export interface Environment {
+  host: string;
   name: string;
   directory: string;
 }
@@ -10,6 +17,7 @@ export interface BranchesResponse {
 }
 
 export interface CreateEnvironmentRequest {
+  host: string;
   name: string;
 }
 
@@ -22,6 +30,7 @@ export interface PromptRun {
 
 export interface Task {
   id: string;
+  host: string;
   agent: AgentKind;
   environment: string;
   base_branch?: string | null;
@@ -34,6 +43,7 @@ export interface Task {
 }
 
 export interface CreateTaskRequest {
+  host: string;
   environment: string;
   base_branch?: string;
   feature_branch?: string;

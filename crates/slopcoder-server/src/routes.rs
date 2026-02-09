@@ -1,45 +1,81 @@
-//! HTTP routes for the Slopcoder API.
+//! HTTP routes for the Slopcoder coordinator API.
 
-use crate::state::{AppState, StateError};
-use chrono::{DateTime, Utc};
+use crate::state::{AppState, ConnectedAgent, RemoteError, StateError};
+use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use slopcoder_core::{
-    anyagent::{resume_anyagent, spawn_anyagent, AgentKind},
-    branch_picker::pick_feature_branch,
+    agent_rpc::{AgentCreateTaskRequest, AgentEnvelope, AgentRequest, AgentResponse},
     task::{Task, TaskId},
     AgentEvent,
 };
+use std::collections::HashMap;
 use std::convert::Infallible;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::sync::{mpsc, oneshot, Mutex};
 use uuid::Uuid;
-use warp::{http::{Method, StatusCode}, Filter, Reply};
+use warp::http::{Method, StatusCode};
 use warp::reject::InvalidQuery;
-use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
+use warp::ws::{Message, WebSocket};
+use warp::{Filter, Reply};
 
 #[derive(Debug)]
 struct AuthError;
-
 impl warp::reject::Reject for AuthError {}
 
 /// Create all API routes.
-pub fn routes(
-    state: AppState,
-) -> impl Filter<Extract = (impl Reply,), Error = warp::Rejection> + Clone {
-    let environments = warp::path("environments")
-        .and(environments_routes(state.clone()));
+pub fn routes(state: AppState) -> impl Filter<Extract = (impl Reply,), Error = Infallible> + Clone {
+    let hosts = warp::path("hosts").and(hosts_routes(state.clone()));
+    let environments = warp::path("environments").and(environments_routes(state.clone()));
+    let tasks = warp::path("tasks").and(tasks_routes(state.clone()));
 
-    let tasks = warp::path("tasks")
-        .and(tasks_routes(state.clone()));
+    let api_scoped = auth_filter(state.clone())
+        .and(hosts.or(environments).or(tasks))
+        .recover(handle_rejection);
+    let api_routes = warp::path("api").and(api_scoped);
 
-    let api_scoped = auth_filter(state)
-        .and(environments.or(tasks))
+    let agent_connect = warp::path!("agent" / "connect")
+        .and(auth_filter(state.clone()))
+        .and(warp::ws())
+        .and(with_state(state))
+        .map(|ws: warp::ws::Ws, state: AppState| {
+            ws.on_upgrade(move |socket| handle_agent_socket(socket, state))
+        })
         .recover(handle_rejection);
 
-    warp::path("api")
-        .and(api_scoped)
+    api_routes.or(agent_connect)
+}
+
+// ============================================================================
+// Hosts
+// ============================================================================
+
+fn hosts_routes(
+    state: AppState,
+) -> impl Filter<Extract = (impl Reply,), Error = warp::Rejection> + Clone {
+    warp::path::end()
+        .and(warp::get())
+        .and(with_state(state))
+        .and_then(list_hosts)
+}
+
+#[derive(Serialize)]
+struct HostResponse {
+    host: String,
+    hostname: String,
+    connected_at: String,
+}
+
+async fn list_hosts(state: AppState) -> Result<impl Reply, Infallible> {
+    let hosts = state.list_hosts().await;
+    let response: Vec<HostResponse> = hosts
+        .into_iter()
+        .map(|h| HostResponse {
+            host: h.host,
+            hostname: h.hostname,
+            connected_at: h.connected_at.to_rfc3339(),
+        })
+        .collect();
+    Ok(warp::reply::json(&response))
 }
 
 // ============================================================================
@@ -62,7 +98,8 @@ fn environments_routes(
 
     let branches = warp::path!(String / "branches")
         .and(warp::get())
-        .and(with_state(state.clone()))
+        .and(warp::query::<HostQuery>())
+        .and(with_state(state))
         .and_then(list_branches);
 
     list.or(create).or(branches)
@@ -70,26 +107,51 @@ fn environments_routes(
 
 #[derive(Serialize)]
 struct EnvironmentResponse {
+    host: String,
     name: String,
     directory: String,
 }
 
 async fn list_environments(state: AppState) -> Result<impl Reply, Infallible> {
-    let config = state.get_config().await;
-    let environments: Vec<EnvironmentResponse> = config
-        .environments
-        .iter()
-        .map(|e| EnvironmentResponse {
-            name: e.name.clone(),
-            directory: e.directory.to_string_lossy().to_string(),
-        })
-        .collect();
+    let agents = state.list_agents().await;
+    let mut environments = Vec::new();
 
+    for agent in agents {
+        match agent.request(AgentRequest::ListEnvironments).await {
+            Ok(AgentResponse::Environments { environments: envs }) => {
+                for env in envs {
+                    environments.push(EnvironmentResponse {
+                        host: agent.host.clone(),
+                        name: env.name,
+                        directory: env.directory.to_string_lossy().to_string(),
+                    });
+                }
+            }
+            Ok(_) => {
+                tracing::warn!(
+                    "Unexpected response for list environments from {}",
+                    agent.host
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to list environments from host '{}': {}",
+                    agent.host,
+                    e
+                );
+            }
+        }
+    }
+
+    environments.sort_by(|a, b| {
+        (a.host.as_str(), a.name.as_str()).cmp(&(b.host.as_str(), b.name.as_str()))
+    });
     Ok(warp::reply::json(&environments))
 }
 
 #[derive(Deserialize)]
 struct CreateEnvironmentRequest {
+    host: String,
     name: String,
 }
 
@@ -97,50 +159,46 @@ async fn create_environment(
     req: CreateEnvironmentRequest,
     state: AppState,
 ) -> Result<impl Reply, Infallible> {
-    let name = req.name.trim();
-
-    if name.is_empty() {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Environment name cannot be empty".to_string(),
-            }),
-            StatusCode::BAD_REQUEST,
-        ));
+    let host = req.host.trim();
+    if host.is_empty() {
+        return Ok(error_reply(StatusCode::BAD_REQUEST, "Host is required"));
     }
 
-    // Validate name (alphanumeric, hyphens, underscores only)
-    if !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Environment name can only contain letters, numbers, hyphens, and underscores".to_string(),
-            }),
-            StatusCode::BAD_REQUEST,
-        ));
-    }
+    let agent = match state.get_agent_for_host(host).await {
+        Some(agent) => agent,
+        None => {
+            return Ok(error_reply(
+                StatusCode::NOT_FOUND,
+                format!("Host '{}' is not connected", host),
+            ));
+        }
+    };
 
-    match state.create_new_environment(name).await {
-        Ok(env) => Ok(warp::reply::with_status(
+    match agent
+        .request(AgentRequest::CreateEnvironment {
+            name: req.name.clone(),
+        })
+        .await
+    {
+        Ok(AgentResponse::Environment { environment }) => Ok(warp::reply::with_status(
             warp::reply::json(&EnvironmentResponse {
-                name: env.name,
-                directory: env.directory.to_string_lossy().to_string(),
+                host: agent.host,
+                name: environment.name,
+                directory: environment.directory.to_string_lossy().to_string(),
             }),
             StatusCode::CREATED,
         )),
-        Err(e) => {
-            let status = match &e {
-                slopcoder_core::environment::EnvironmentError::AlreadyExists(_) => StatusCode::CONFLICT,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            let error = e.to_string();
-            if status == StatusCode::INTERNAL_SERVER_ERROR {
-                tracing::error!("Failed to create environment '{}': {}", name, error);
-            }
-            Ok(warp::reply::with_status(
-                warp::reply::json(&ErrorResponse { error }),
-                status,
-            ))
-        }
+        Ok(_) => Ok(error_reply(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unexpected response from agent",
+        )),
+        Err(e) => Ok(error_reply(state_error_status(&e), e.to_string())),
     }
+}
+
+#[derive(Deserialize)]
+struct HostQuery {
+    host: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -148,56 +206,41 @@ struct BranchesResponse {
     branches: Vec<String>,
 }
 
-#[derive(Serialize)]
-struct ErrorResponse {
-    error: String,
-}
-
-fn internal_server_error(
-    context: &str,
-    error: impl Into<String>,
-) -> warp::reply::WithStatus<warp::reply::Json> {
-    let error = error.into();
-    tracing::error!("{}: {}", context, error);
-    warp::reply::with_status(
-        warp::reply::json(&ErrorResponse { error }),
-        StatusCode::INTERNAL_SERVER_ERROR,
-    )
-}
-
-async fn list_branches(name: String, state: AppState) -> Result<impl Reply, Infallible> {
-    let name = match urlencoding::decode(&name) {
+async fn list_branches(
+    name: String,
+    query: HostQuery,
+    state: AppState,
+) -> Result<impl Reply, Infallible> {
+    let decoded_name = match urlencoding::decode(&name) {
         Ok(decoded) => decoded.into_owned(),
         Err(_) => {
-            return Ok(warp::reply::with_status(
-                warp::reply::json(&ErrorResponse {
-                    error: "Environment name must be valid URL encoding".to_string(),
-                }),
+            return Ok(error_reply(
                 StatusCode::BAD_REQUEST,
+                "Environment name must be valid URL encoding",
             ));
         }
     };
 
-    let config = state.get_config().await;
-
-    let Some(env) = config.find(&name) else {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: format!("Environment '{}' not found", name),
-            }),
-            StatusCode::NOT_FOUND,
-        ));
+    let agent = match pick_agent(state.clone(), query.host.as_deref()).await {
+        Ok(agent) => agent,
+        Err(e) => return Ok(error_reply(state_error_status(&e), e.to_string())),
     };
 
-    match env.list_branches().await {
-        Ok(branches) => Ok(warp::reply::with_status(
+    match agent
+        .request(AgentRequest::ListBranches {
+            environment: decoded_name,
+        })
+        .await
+    {
+        Ok(AgentResponse::Branches { branches }) => Ok(warp::reply::with_status(
             warp::reply::json(&BranchesResponse { branches }),
             StatusCode::OK,
         )),
-        Err(e) => Ok(internal_server_error(
-            &format!("Failed to list branches for environment '{}'", name),
-            e.to_string(),
+        Ok(_) => Ok(error_reply(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unexpected response from agent",
         )),
+        Err(e) => Ok(error_reply(state_error_status(&e), e.to_string())),
     }
 }
 
@@ -249,20 +292,28 @@ fn tasks_routes(
         .and(warp::ws())
         .and(with_state(state.clone()))
         .map(|id: String, ws: warp::ws::Ws, state: AppState| {
-            ws.on_upgrade(move |socket| handle_websocket(socket, id, state))
+            ws.on_upgrade(move |socket| handle_task_websocket(socket, id, state))
         });
 
     let merge = warp::path!(String / "merge")
         .and(warp::post())
-        .and(with_state(state.clone()))
+        .and(with_state(state))
         .and_then(merge_task);
 
-    list.or(create).or(get).or(prompt).or(output).or(diff).or(interrupt).or(stream).or(merge)
+    list.or(create)
+        .or(get)
+        .or(prompt)
+        .or(output)
+        .or(diff)
+        .or(interrupt)
+        .or(stream)
+        .or(merge)
 }
 
 #[derive(Serialize)]
 struct TaskResponse {
     id: String,
+    host: String,
     agent: String,
     environment: String,
     base_branch: Option<String>,
@@ -282,10 +333,11 @@ struct PromptRunResponse {
     success: Option<bool>,
 }
 
-impl From<&Task> for TaskResponse {
-    fn from(task: &Task) -> Self {
+impl TaskResponse {
+    fn from_task(host: &str, task: &Task) -> Self {
         Self {
             id: task.id.to_string(),
+            host: host.to_string(),
             agent: format!("{:?}", task.agent).to_lowercase(),
             environment: task.environment.clone(),
             base_branch: task.base_branch.clone(),
@@ -293,7 +345,7 @@ impl From<&Task> for TaskResponse {
             status: format!("{:?}", task.status).to_lowercase(),
             session_id: task.session_id.map(|id| id.to_string()),
             created_at: task.created_at.to_rfc3339(),
-            worktree_date: worktree_date(task),
+            worktree_date: None,
             history: task
                 .history
                 .iter()
@@ -308,57 +360,54 @@ impl From<&Task> for TaskResponse {
     }
 }
 
-fn worktree_date(task: &Task) -> Option<String> {
-    let metadata = fs::metadata(&task.worktree_path).ok()?;
-    let timestamp = metadata
-        .created()
-        .or_else(|_| metadata.modified())
-        .ok()?;
-    let timestamp: DateTime<Utc> = timestamp.into();
-    Some(timestamp.date_naive().to_string())
-}
-
 async fn list_tasks(state: AppState) -> Result<impl Reply, Infallible> {
-    let tasks = state.list_tasks().await;
-    let responses: Vec<TaskResponse> = tasks.iter().map(TaskResponse::from).collect();
-    Ok(warp::reply::json(&responses))
+    let agents = state.list_agents().await;
+    let mut tasks = Vec::new();
+
+    for agent in agents {
+        match agent.request(AgentRequest::ListTasks).await {
+            Ok(AgentResponse::Tasks { tasks: host_tasks }) => {
+                state.record_tasks_for_host(&agent.host, &host_tasks).await;
+                tasks.extend(
+                    host_tasks
+                        .iter()
+                        .map(|task| TaskResponse::from_task(&agent.host, task)),
+                );
+            }
+            Ok(_) => tracing::warn!("Unexpected list_tasks response from {}", agent.host),
+            Err(e) => tracing::warn!("Failed to list tasks from '{}': {}", agent.host, e),
+        }
+    }
+
+    tasks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(warp::reply::json(&tasks))
 }
 
 async fn get_task(id: String, state: AppState) -> Result<impl Reply, Infallible> {
-    let Ok(uuid) = Uuid::parse_str(&id) else {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Invalid task ID".to_string(),
-            }),
-            StatusCode::BAD_REQUEST,
-        ));
+    let task_id = match parse_task_id(&id) {
+        Ok(id) => id,
+        Err(reply) => return Ok(reply),
     };
 
-    let task_id = TaskId(uuid);
-
-    match state.get_task(task_id).await {
-        Some(task) => Ok(warp::reply::with_status(
-            warp::reply::json(&TaskResponse::from(&task)),
+    match find_task(&state, task_id).await {
+        Ok(Some((host, task))) => Ok(warp::reply::with_status(
+            warp::reply::json(&TaskResponse::from_task(&host, &task)),
             StatusCode::OK,
         )),
-        None => Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Task not found".to_string(),
-            }),
-            StatusCode::NOT_FOUND,
-        )),
+        Ok(None) => Ok(error_reply(StatusCode::NOT_FOUND, "Task not found")),
+        Err(e) => Ok(error_reply(state_error_status(&e), e.to_string())),
     }
 }
 
 #[derive(Deserialize)]
 struct CreateTaskRequest {
+    host: String,
     environment: String,
-    /// Base branch to create the feature branch from. Defaults to "main" if not specified.
     base_branch: Option<String>,
     feature_branch: Option<String>,
     prompt: String,
     #[serde(default)]
-    agent: Option<AgentKind>,
+    agent: Option<slopcoder_core::anyagent::AgentKind>,
 }
 
 #[derive(Serialize)]
@@ -367,118 +416,46 @@ struct CreateTaskResponse {
     worktree_path: String,
 }
 
-async fn create_task(
-    req: CreateTaskRequest,
-    state: AppState,
-) -> Result<impl Reply, Infallible> {
-    let config = state.get_config().await;
-
-    // Find the environment
-    let Some(env) = config.find(&req.environment) else {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: format!("Environment '{}' not found", req.environment),
-            }),
-            StatusCode::NOT_FOUND,
-        ));
-    };
-
-    // Use "main" as default base branch if not specified
-    let base_branch = req.base_branch
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("main")
-        .to_string();
-
-    let feature_branch = match req
-        .feature_branch
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        Some(branch) => branch.to_string(),
+async fn create_task(req: CreateTaskRequest, state: AppState) -> Result<impl Reply, Infallible> {
+    let host = req.host.trim();
+    if host.is_empty() {
+        return Ok(error_reply(StatusCode::BAD_REQUEST, "Host is required"));
+    }
+    let agent = match state.get_agent_for_host(host).await {
+        Some(agent) => agent,
         None => {
-            let model = state.get_branch_model().await;
-            match pick_feature_branch(&req.prompt, &model).await {
-                Ok(branch) => branch,
-                Err(err) => {
-                    tracing::warn!("Failed to generate feature branch: {}", err);
-                    return Ok(warp::reply::with_status(
-                        warp::reply::json(&ErrorResponse {
-                            error: "You must enter the name of the feature branch.".to_string(),
-                        }),
-                        StatusCode::BAD_REQUEST,
-                    ));
-                }
-            }
-        }
-    };
-
-    // Create a new feature branch worktree
-    let worktree_path = match env
-        .create_worktree_from_base(&base_branch, &feature_branch)
-        .await
-    {
-        Ok(path) => path,
-        Err(e) => {
-            let status = match e {
-                slopcoder_core::environment::EnvironmentError::BranchExists(_)
-                | slopcoder_core::environment::EnvironmentError::WorktreeExists(_) => {
-                    StatusCode::CONFLICT
-                }
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            let error = format!("Failed to create worktree: {}", e);
-            if status == StatusCode::INTERNAL_SERVER_ERROR {
-                tracing::error!(
-                    "Failed to create task worktree for env='{}' base='{}' feature='{}': {}",
-                    req.environment,
-                    base_branch,
-                    feature_branch,
-                    error
-                );
-            }
-            return Ok(warp::reply::with_status(
-                warp::reply::json(&ErrorResponse { error }),
-                status,
+            return Ok(error_reply(
+                StatusCode::NOT_FOUND,
+                format!("Host '{}' is not connected", host),
             ));
         }
     };
 
-    // Create the task
-    let task = Task::new(
-        req.agent.unwrap_or_default(),
-        req.environment,
-        Some(base_branch),
-        feature_branch,
-        worktree_path.clone(),
-    );
-
-    let task_id = task.id;
-    let response = CreateTaskResponse {
-        id: task_id.to_string(),
-        worktree_path: worktree_path.to_string_lossy().to_string(),
+    let request = AgentCreateTaskRequest {
+        environment: req.environment,
+        base_branch: req.base_branch,
+        feature_branch: req.feature_branch,
+        prompt: req.prompt,
+        agent: req.agent,
     };
 
-    if let Err(e) = state.insert_task(task).await {
-        return Ok(internal_server_error(
-            "Failed to save task",
-            format!("Failed to save task: {}", e),
-        ));
+    match agent.request(AgentRequest::CreateTask { request }).await {
+        Ok(AgentResponse::CreatedTask { id, worktree_path }) => {
+            state.set_task_host(id, agent.host).await;
+            Ok(warp::reply::with_status(
+                warp::reply::json(&CreateTaskResponse {
+                    id: id.to_string(),
+                    worktree_path,
+                }),
+                StatusCode::CREATED,
+            ))
+        }
+        Ok(_) => Ok(error_reply(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unexpected response from agent",
+        )),
+        Err(e) => Ok(error_reply(state_error_status(&e), e.to_string())),
     }
-
-    // Start the agent
-    let state_clone = state.clone();
-    let prompt = req.prompt.clone();
-    tokio::spawn(async move {
-        run_agent(state_clone, task_id, prompt, None).await;
-    });
-
-    Ok(warp::reply::with_status(
-        warp::reply::json(&response),
-        StatusCode::CREATED,
-    ))
 }
 
 #[derive(Deserialize)]
@@ -486,9 +463,67 @@ struct SendPromptRequest {
     prompt: String,
 }
 
+async fn send_prompt(
+    id: String,
+    req: SendPromptRequest,
+    state: AppState,
+) -> Result<impl Reply, Infallible> {
+    let task_id = match parse_task_id(&id) {
+        Ok(id) => id,
+        Err(reply) => return Ok(reply),
+    };
+
+    let agent = match resolve_agent_for_task(&state, task_id).await {
+        Ok(agent) => agent,
+        Err(e) => return Ok(error_reply(state_error_status(&e), e.to_string())),
+    };
+
+    match agent
+        .request(AgentRequest::SendPrompt {
+            task_id,
+            prompt: req.prompt,
+        })
+        .await
+    {
+        Ok(AgentResponse::Ack) => Ok(warp::reply::with_status(
+            warp::reply::json(&serde_json::json!({ "status": "started" })),
+            StatusCode::OK,
+        )),
+        Ok(_) => Ok(error_reply(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unexpected response from agent",
+        )),
+        Err(e) => Ok(error_reply(state_error_status(&e), e.to_string())),
+    }
+}
+
 #[derive(Serialize)]
 struct TaskOutputResponse {
     events: Vec<AgentEvent>,
+}
+
+async fn get_task_output(id: String, state: AppState) -> Result<impl Reply, Infallible> {
+    let task_id = match parse_task_id(&id) {
+        Ok(id) => id,
+        Err(reply) => return Ok(reply),
+    };
+
+    let agent = match resolve_agent_for_task(&state, task_id).await {
+        Ok(agent) => agent,
+        Err(e) => return Ok(error_reply(state_error_status(&e), e.to_string())),
+    };
+
+    match agent.request(AgentRequest::GetTaskOutput { task_id }).await {
+        Ok(AgentResponse::TaskOutput { events }) => Ok(warp::reply::with_status(
+            warp::reply::json(&TaskOutputResponse { events }),
+            StatusCode::OK,
+        )),
+        Ok(_) => Ok(error_reply(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unexpected response from agent",
+        )),
+        Err(e) => Ok(error_reply(state_error_status(&e), e.to_string())),
+    }
 }
 
 #[derive(Serialize)]
@@ -497,574 +532,278 @@ struct TaskDiffResponse {
     unstaged: String,
 }
 
-async fn send_prompt(
-    id: String,
-    req: SendPromptRequest,
-    state: AppState,
-) -> Result<impl Reply, Infallible> {
-    let Ok(uuid) = Uuid::parse_str(&id) else {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Invalid task ID".to_string(),
-            }),
-            StatusCode::BAD_REQUEST,
-        ));
+async fn get_task_diff(id: String, state: AppState) -> Result<impl Reply, Infallible> {
+    let task_id = match parse_task_id(&id) {
+        Ok(id) => id,
+        Err(reply) => return Ok(reply),
     };
 
-    let task_id = TaskId(uuid);
-
-    let task = match state.get_task(task_id).await {
-        Some(t) => t,
-        None => {
-            return Ok(warp::reply::with_status(
-                warp::reply::json(&ErrorResponse {
-                    error: "Task not found".to_string(),
-                }),
-                StatusCode::NOT_FOUND,
-            ));
-        }
+    let agent = match resolve_agent_for_task(&state, task_id).await {
+        Ok(agent) => agent,
+        Err(e) => return Ok(error_reply(state_error_status(&e), e.to_string())),
     };
 
-    if !task.can_run() {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Task is currently running".to_string(),
-            }),
-            StatusCode::CONFLICT,
-        ));
+    match agent.request(AgentRequest::GetTaskDiff { task_id }).await {
+        Ok(AgentResponse::TaskDiff { staged, unstaged }) => Ok(warp::reply::with_status(
+            warp::reply::json(&TaskDiffResponse { staged, unstaged }),
+            StatusCode::OK,
+        )),
+        Ok(_) => Ok(error_reply(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unexpected response from agent",
+        )),
+        Err(e) => Ok(error_reply(state_error_status(&e), e.to_string())),
     }
-
-    // Check worktree still exists
-    if !state.validate_task_worktree(task_id).await {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Task worktree no longer exists (may have been removed from CLI)".to_string(),
-            }),
-            StatusCode::GONE,
-        ));
-    }
-
-    let session_id = task.session_id;
-
-    // Start the agent
-    let state_clone = state.clone();
-    let prompt = req.prompt.clone();
-    tokio::spawn(async move {
-        run_agent(state_clone, task_id, prompt, session_id).await;
-    });
-
-    Ok(warp::reply::with_status(
-        warp::reply::json(&serde_json::json!({"status": "started"})),
-        StatusCode::OK,
-    ))
-}
-
-async fn get_task_output(id: String, state: AppState) -> Result<impl Reply, Infallible> {
-    let Ok(uuid) = Uuid::parse_str(&id) else {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Invalid task ID".to_string(),
-            }),
-            StatusCode::BAD_REQUEST,
-        ));
-    };
-
-    let task_id = TaskId(uuid);
-    let task = match state.get_task(task_id).await {
-        Some(t) => t,
-        None => {
-            return Ok(warp::reply::with_status(
-                warp::reply::json(&ErrorResponse {
-                    error: "Task not found".to_string(),
-                }),
-                StatusCode::NOT_FOUND,
-            ));
-        }
-    };
-
-    let Some(env_dir) = state.get_environment_directory(&task.environment).await else {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Environment not found".to_string(),
-            }),
-            StatusCode::NOT_FOUND,
-        ));
-    };
-
-    let output_path = task_output_path(&env_dir, task_id);
-    let events = match read_output_events(&output_path).await {
-        Ok(events) => events,
-        Err(e) => {
-            return Ok(internal_server_error(
-                "Failed to read task output events",
-                format!("Failed to read output: {}", e),
-            ));
-        }
-    };
-
-    Ok(warp::reply::with_status(
-        warp::reply::json(&TaskOutputResponse { events }),
-        StatusCode::OK,
-    ))
 }
 
 async fn interrupt_task(id: String, state: AppState) -> Result<impl Reply, Infallible> {
-    let Ok(uuid) = Uuid::parse_str(&id) else {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Invalid task ID".to_string(),
-            }),
-            StatusCode::BAD_REQUEST,
-        ));
+    let task_id = match parse_task_id(&id) {
+        Ok(id) => id,
+        Err(reply) => return Ok(reply),
     };
 
-    let task_id = TaskId(uuid);
-
-    // Send the interrupt signal
-    if state.send_interrupt(task_id).await {
-        Ok(warp::reply::with_status(
-            warp::reply::json(&serde_json::json!({"status": "interrupted"})),
-            StatusCode::OK,
-        ))
-    } else {
-        Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Task is not running or interrupt channel not found".to_string(),
-            }),
-            StatusCode::CONFLICT,
-        ))
-    }
-}
-
-async fn get_task_diff(id: String, state: AppState) -> Result<impl Reply, Infallible> {
-    let Ok(uuid) = Uuid::parse_str(&id) else {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Invalid task ID".to_string(),
-            }),
-            StatusCode::BAD_REQUEST,
-        ));
+    let agent = match resolve_agent_for_task(&state, task_id).await {
+        Ok(agent) => agent,
+        Err(e) => return Ok(error_reply(state_error_status(&e), e.to_string())),
     };
 
-    let task_id = TaskId(uuid);
-    let task = match state.get_task(task_id).await {
-        Some(t) => t,
-        None => {
-            return Ok(warp::reply::with_status(
-                warp::reply::json(&ErrorResponse {
-                    error: "Task not found".to_string(),
-                }),
-                StatusCode::NOT_FOUND,
-            ));
-        }
-    };
-
-    let Some(base_branch) = task.base_branch.as_deref() else {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Task has no base branch".to_string(),
-            }),
-            StatusCode::BAD_REQUEST,
-        ));
-    };
-
-    match load_git_diff(&task.worktree_path, base_branch).await {
-        Ok(diff) => Ok(warp::reply::with_status(
-            warp::reply::json(&TaskDiffResponse {
-                staged: diff.staged,
-                unstaged: diff.unstaged,
-            }),
+    match agent.request(AgentRequest::InterruptTask { task_id }).await {
+        Ok(AgentResponse::Ack) => Ok(warp::reply::with_status(
+            warp::reply::json(&serde_json::json!({ "status": "interrupted" })),
             StatusCode::OK,
         )),
-        Err(e) => Ok(internal_server_error(
-            "Failed to compute task diff",
-            format!("Failed to get diff: {}", e),
+        Ok(_) => Ok(error_reply(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unexpected response from agent",
         )),
+        Err(e) => Ok(error_reply(state_error_status(&e), e.to_string())),
     }
 }
 
 async fn merge_task(id: String, state: AppState) -> Result<impl Reply, Infallible> {
-    let Ok(uuid) = Uuid::parse_str(&id) else {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Invalid task ID".to_string(),
-            }),
-            StatusCode::BAD_REQUEST,
-        ));
+    let task_id = match parse_task_id(&id) {
+        Ok(id) => id,
+        Err(reply) => return Ok(reply),
     };
 
-    let task_id = TaskId(uuid);
-    let task = match state.get_task(task_id).await {
-        Some(t) => t,
-        None => {
-            return Ok(warp::reply::with_status(
-                warp::reply::json(&ErrorResponse {
-                    error: "Task not found".to_string(),
-                }),
-                StatusCode::NOT_FOUND,
-            ));
-        }
+    let agent = match resolve_agent_for_task(&state, task_id).await {
+        Ok(agent) => agent,
+        Err(e) => return Ok(error_reply(state_error_status(&e), e.to_string())),
     };
 
-    // 1. Check for unstaged changes in the task's worktree
-    if has_unstaged_changes(&task.worktree_path).await {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Task has unstaged changes. Please commit or stash them before merging.".to_string(),
-            }),
-            StatusCode::CONFLICT,
-        ));
+    match agent.request(AgentRequest::MergeTask { task_id }).await {
+        Ok(AgentResponse::MergeResult { status, message }) => Ok(warp::reply::with_status(
+            warp::reply::json(&serde_json::json!({ "status": status, "message": message })),
+            StatusCode::OK,
+        )),
+        Ok(_) => Ok(error_reply(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unexpected response from agent",
+        )),
+        Err(e) => Ok(error_reply(state_error_status(&e), e.to_string())),
+    }
+}
+
+async fn resolve_agent_for_task(
+    state: &AppState,
+    task_id: TaskId,
+) -> Result<ConnectedAgent, StateError> {
+    if let Some(agent) = state.resolve_agent_for_task(task_id).await {
+        return Ok(agent);
     }
 
-    let base_branch = task.base_branch.as_deref().unwrap_or("main");
-
-    // 2. Get environment and target worktree
-    let Some(_env_dir) = state.get_environment_directory(&task.environment).await else {
-        return Ok(internal_server_error(
-            "Task environment directory missing",
-            "Environment not found",
-        ));
-    };
-
-    // We need to access the Environment struct to get the worktree path properly.
-    // Since state.get_config() returns a full config, we can find the env there.
-    let config = state.get_config().await;
-    let Some(env) = config.find(&task.environment) else {
-        return Ok(internal_server_error(
-            "Task environment missing from config",
-            "Environment not found in config",
-        ));
-    };
-
-    let target_worktree = env.worktree_path(base_branch);
-    let target_exists = target_worktree.exists();
-
-    // 3. Prepare target worktree
-    if target_exists {
-        // If it exists, check for unstaged changes
-        if has_unstaged_changes(&target_worktree).await {
-            return Ok(warp::reply::with_status(
-                warp::reply::json(&ErrorResponse {
-                    error: format!("Target branch '{}' worktree has unstaged changes.", base_branch),
-                }),
-                StatusCode::CONFLICT,
-            ));
-        }
-    } else {
-        // Create it
-        if let Err(e) = env.create_worktree(base_branch).await {
-            return Ok(internal_server_error(
-                "Failed to prepare target base worktree for merge",
-                format!("Failed to create worktree for '{}': {}", base_branch, e),
-            ));
+    let agents = state.list_agents().await;
+    for agent in agents {
+        let response = agent.request(AgentRequest::GetTask { task_id }).await;
+        if let Ok(AgentResponse::Task { task: Some(_) }) = response {
+            state.set_task_host(task_id, agent.host.clone()).await;
+            return Ok(agent);
         }
     }
 
-    // 4. Perform merge
-    tracing::info!("Merging {} into {} at {}", task.feature_branch, base_branch, target_worktree.display());
+    Err(StateError::RemoteError {
+        status: StatusCode::NOT_FOUND.as_u16(),
+        error: "Task not found".to_string(),
+    })
+}
 
-    let merge_output = Command::new("git")
-        .args(["merge", &task.feature_branch])
-        .current_dir(&target_worktree)
-        .output()
-        .await;
-
-    match merge_output {
-        Ok(output) => {
-            if output.status.success() {
-                // Success!
-                // Push the changes to the remote if possible? 
-                // The requirements didn't say to push, just "merge into main/master".
-                // Usually "merge" implies local merge.
-                
-                Ok(warp::reply::with_status(
-                    warp::reply::json(&serde_json::json!({
-                        "status": "merged",
-                        "message": format!("Successfully merged {} into {}", task.feature_branch, base_branch)
-                    })),
-                    StatusCode::OK,
-                ))
-            } else {
-                // Merge failed (conflict?)
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                
-                tracing::warn!("Merge failed: {}\n{}", stdout, stderr);
-
-                // Abort merge
-                let _ = Command::new("git")
-                    .args(["merge", "--abort"])
-                    .current_dir(&target_worktree)
-                    .output()
-                    .await;
-
-                Ok(warp::reply::with_status(
-                    warp::reply::json(&ErrorResponse {
-                        error: format!("Merge failed (reverted): {}", stdout.trim()),
-                    }),
-                    StatusCode::CONFLICT,
-                ))
+async fn find_task(
+    state: &AppState,
+    task_id: TaskId,
+) -> Result<Option<(String, Task)>, StateError> {
+    if let Some(agent) = state.resolve_agent_for_task(task_id).await {
+        match agent.request(AgentRequest::GetTask { task_id }).await {
+            Ok(AgentResponse::Task { task: Some(task) }) => {
+                return Ok(Some((agent.host, task)));
+            }
+            Ok(AgentResponse::Task { task: None }) => {
+                state.clear_task_host(task_id).await;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!("Failed to fetch mapped task {}: {}", task_id, e);
             }
         }
-        Err(e) => {
-             tracing::error!(
-                "Failed to execute git merge for task {}: {}",
-                task_id,
-                e
-            );
-             Ok(warp::reply::with_status(
-                warp::reply::json(&ErrorResponse {
-                    error: format!("Failed to execute git merge: {}", e),
-                }),
-                StatusCode::INTERNAL_SERVER_ERROR,
-            ))
+    }
+
+    let agents = state.list_agents().await;
+    for agent in agents {
+        match agent.request(AgentRequest::GetTask { task_id }).await {
+            Ok(AgentResponse::Task { task: Some(task) }) => {
+                state.set_task_host(task_id, agent.host.clone()).await;
+                return Ok(Some((agent.host, task)));
+            }
+            Ok(AgentResponse::Task { task: None }) => {}
+            Ok(_) => {}
+            Err(e) => tracing::warn!("Failed to query task {} on {}: {}", task_id, agent.host, e),
         }
     }
+    Ok(None)
 }
 
-async fn has_unstaged_changes(worktree_path: &Path) -> bool {
-    // Check for unstaged changes: diff between index and working tree
-    let unstaged_output = Command::new("git")
-        .args(["diff", "--quiet"]) // --quiet implies exit code 1 if there are changes
-        .current_dir(worktree_path)
-        .output()
-        .await;
-    
-    if let Ok(output) = unstaged_output {
-        if output.status.code() == Some(1) {
-             return true;
-        }
-    }
+// ============================================================================
+// Agent websocket
+// ============================================================================
 
-    // Check for staged changes (to be safe, though "unstaged" was the requirement, 
-    // usually we want a clean slate. Requirement said "unstaged changes in main/master". 
-    // Usually merge requires clean index too).
-    // Let's check staged too to be safe.
-    let staged_output = Command::new("git")
-        .args(["diff", "--cached", "--quiet"])
-        .current_dir(worktree_path)
-        .output()
-        .await;
+async fn handle_agent_socket(ws: WebSocket, state: AppState) {
+    let (mut sink, mut stream) = ws.split();
 
-    if let Ok(output) = staged_output {
-        if output.status.code() == Some(1) {
-             return true;
-        }
-    }
-
-    // Check for untracked files
-    let untracked_output = Command::new("git")
-        .args(["ls-files", "--others", "--exclude-standard"])
-        .current_dir(worktree_path)
-        .output()
-        .await;
-
-    if let Ok(output) = untracked_output {
-         let stdout = String::from_utf8_lossy(&output.stdout);
-         if !stdout.trim().is_empty() {
-             return true;
-         }
-    }
-
-    false
-}
-
-/// Run the agent for a task.
-async fn run_agent(state: AppState, task_id: TaskId, prompt: String, session_id: Option<Uuid>) {
-    let task = match state.get_task(task_id).await {
-        Some(t) => t,
-        None => {
-            tracing::error!("Task {} not found", task_id);
-            return;
-        }
+    let hello = match stream.next().await {
+        Some(Ok(msg)) if msg.is_text() => match msg.to_str() {
+            Ok(text) => match serde_json::from_str::<AgentEnvelope>(text) {
+                Ok(AgentEnvelope::Hello {
+                    hostname,
+                    display_name,
+                }) => (hostname, display_name),
+                _ => {
+                    let _ = sink.send(Message::text("expected hello")).await;
+                    return;
+                }
+            },
+            Err(_) => return,
+        },
+        _ => return,
     };
 
-    let mut output_file = match state.get_environment_directory(&task.environment).await {
-        Some(env_dir) => {
-            let output_path = task_output_path(&env_dir, task_id);
-            match OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&output_path)
-                .await
-            {
-                Ok(file) => Some(file),
+    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<AgentEnvelope>();
+    let pending: Arc<Mutex<HashMap<String, oneshot::Sender<Result<AgentResponse, RemoteError>>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
+    let agent = state
+        .register_agent(
+            hello.0.clone(),
+            hello.1.clone(),
+            outbound_tx.clone(),
+            pending.clone(),
+        )
+        .await;
+    tracing::info!(
+        "Agent connected host='{}' hostname='{}'",
+        agent.host,
+        agent.hostname
+    );
+
+    let writer = tokio::spawn(async move {
+        while let Some(envelope) = outbound_rx.recv().await {
+            let payload = match serde_json::to_string(&envelope) {
+                Ok(v) => v,
                 Err(e) => {
-                    tracing::warn!("Failed to open output log {}: {}", output_path.display(), e);
-                    None
+                    tracing::warn!("Failed to serialize envelope for agent write: {}", e);
+                    continue;
                 }
-            }
-        }
-        None => None,
-    };
-
-    // Mark the task as running
-    if let Err(e) = state.start_task_run(task_id, prompt.clone()).await {
-        match e {
-            StateError::WorktreeMissing(_) => {
-                tracing::error!("Task {} worktree no longer exists", task_id);
-            }
-            _ => {
-                tracing::error!("Failed to start task run for {}: {}", task_id, e);
-            }
-        }
-        return;
-    }
-
-    // Create event channel and interrupt receiver for this task
-    let _event_tx = state.create_event_channel(task_id).await;
-    let mut interrupt_rx = state.register_interrupt_channel(task_id).await;
-
-    let agent_config = state.get_agent_config().await;
-
-    // Emit prompt event for output log + websocket
-    let prompt_event = AgentEvent::PromptSent {
-        prompt: prompt.clone(),
-    };
-    if let Some(file) = output_file.as_mut() {
-        if let Ok(line) = serde_json::to_string(&prompt_event) {
-            if file.write_all(line.as_bytes()).await.is_err()
-                || file.write_all(b"\n").await.is_err()
-            {
-                tracing::warn!("Failed to write prompt event for {}", task_id);
-                output_file = None;
-            }
-        }
-    }
-    state.broadcast_event(task_id, prompt_event).await;
-
-    // Spawn the agent
-    let agent_result = if let Some(sid) = session_id {
-        resume_anyagent(task.agent, &agent_config, &task.worktree_path, sid, &prompt).await
-    } else {
-        spawn_anyagent(task.agent, &agent_config, &task.worktree_path, &prompt).await
-    };
-
-    let mut agent = match agent_result {
-        Ok(a) => a,
-        Err(e) => {
-            tracing::error!("Failed to spawn agent: {}", e);
-            let _ = state.complete_task_run(task_id, false).await;
-            return;
-        }
-    };
-
-    // Stream events and listen for interrupts
-    let mut interrupted = false;
-    loop {
-        tokio::select! {
-            result = agent.next_event() => {
-                match result {
-                    Some(Ok(event)) => {
-                        // Update session ID if we got it
-                        if let Some(sid) = event.session_id() {
-                            if let Err(e) = state.set_task_session_id(task_id, sid).await {
-                                tracing::warn!("Failed to save session ID: {}", e);
-                            }
-                        }
-                        if let Some(file) = output_file.as_mut() {
-                            match serde_json::to_string(&event) {
-                                Ok(line) => {
-                                    if file.write_all(line.as_bytes()).await.is_err()
-                                        || file.write_all(b"\n").await.is_err()
-                                    {
-                                        tracing::warn!("Failed to write output log for {}", task_id);
-                                        output_file = None;
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::warn!("Failed to serialize event for {}: {}", task_id, e);
-                                }
-                            }
-                        }
-                        // Broadcast to WebSocket clients
-                        state.broadcast_event(task_id, event).await;
-                    }
-                    Some(Err(e)) => {
-                        tracing::warn!("Error reading event: {}", e);
-                    }
-                    None => {
-                        // Agent finished normally
-                        break;
-                    }
-                }
-            }
-            _ = &mut interrupt_rx => {
-                // Interrupt received
-                tracing::info!("Task {} interrupted by user", task_id);
-                interrupted = true;
-                if let Err(e) = agent.kill().await {
-                    tracing::warn!("Failed to kill agent for task {}: {}", task_id, e);
-                }
+            };
+            if sink.send(Message::text(payload)).await.is_err() {
                 break;
             }
         }
-    }
+    });
 
-    // Handle completion or interruption
-    if interrupted {
-        // Task was interrupted
-        if let Err(e) = state.interrupt_task_run(task_id).await {
-            tracing::warn!("Failed to save task interruption: {}", e);
+    while let Some(incoming) = stream.next().await {
+        let Ok(message) = incoming else {
+            break;
+        };
+        if message.is_close() {
+            break;
         }
-        tracing::info!("Task {} interrupted", task_id);
-    } else {
-        // Wait for normal completion
-        let result = agent.wait().await;
-        let success = match &result {
-            Ok(r) => {
-                // Update session ID from result
-                if let Err(e) = state.set_task_session_id(task_id, r.session_id).await {
-                    tracing::warn!("Failed to save session ID: {}", e);
-                }
-                r.success
-            }
-            Err(_) => false,
+        if !message.is_text() {
+            continue;
+        }
+
+        let text = match message.to_str() {
+            Ok(t) => t,
+            Err(_) => continue,
         };
 
-        if let Err(e) = state.complete_task_run(task_id, success).await {
-            tracing::warn!("Failed to save task completion: {}", e);
-        }
-        tracing::info!("Task {} completed with success={}", task_id, success);
-    }
-}
-
-// ============================================================================
-// WebSocket handler
-// ============================================================================
-
-use futures::{SinkExt, StreamExt};
-use warp::ws::{Message, WebSocket};
-
-async fn handle_websocket(ws: WebSocket, id: String, state: AppState) {
-    let Ok(uuid) = Uuid::parse_str(&id) else {
-        tracing::warn!("Invalid task ID in WebSocket connection: {}", id);
-        return;
-    };
-
-    let task_id = TaskId(uuid);
-
-    // Subscribe to events
-    let mut rx = match state.subscribe_to_task(task_id).await {
-        Some(rx) => rx,
-        None => {
-            tracing::warn!("No event channel for task {}", task_id);
-            return;
-        }
-    };
-
-    let (mut tx, mut _rx) = ws.split();
-
-    // Forward events to WebSocket
-    while let Ok(event) = rx.recv().await {
-        let json = match serde_json::to_string(&event) {
-            Ok(j) => j,
+        let envelope = match serde_json::from_str::<AgentEnvelope>(text) {
+            Ok(env) => env,
             Err(e) => {
-                tracing::warn!("Failed to serialize event: {}", e);
+                tracing::warn!("Failed to decode agent envelope from {}: {}", agent.host, e);
                 continue;
             }
         };
 
+        match envelope {
+            AgentEnvelope::Response {
+                request_id,
+                response,
+            } => {
+                if let Some(tx) = pending.lock().await.remove(&request_id) {
+                    let _ = tx.send(Ok(response));
+                }
+            }
+            AgentEnvelope::Error {
+                request_id,
+                status,
+                error,
+            } => {
+                if let Some(tx) = pending.lock().await.remove(&request_id) {
+                    let _ = tx.send(Err(RemoteError { status, error }));
+                }
+            }
+            AgentEnvelope::TaskEvent { task_id, event } => {
+                state.set_task_host(task_id, agent.host.clone()).await;
+                state.broadcast_task_event(task_id, event).await;
+            }
+            AgentEnvelope::Hello { .. } | AgentEnvelope::Request { .. } => {
+                tracing::warn!("Ignoring unexpected envelope from agent '{}'", agent.host);
+            }
+        }
+    }
+
+    let mut pending_locked = pending.lock().await;
+    for (_, tx) in pending_locked.drain() {
+        let _ = tx.send(Err(RemoteError {
+            status: StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+            error: "Agent disconnected".to_string(),
+        }));
+    }
+    drop(pending_locked);
+
+    writer.abort();
+    state.unregister_agent(agent.id).await;
+}
+
+// ============================================================================
+// Task event websocket for UI
+// ============================================================================
+
+async fn handle_task_websocket(ws: WebSocket, id: String, state: AppState) {
+    let Ok(uuid) = Uuid::parse_str(&id) else {
+        tracing::warn!("Invalid task ID in websocket: {}", id);
+        return;
+    };
+    let task_id = TaskId(uuid);
+    let mut rx = state.subscribe_to_task(task_id).await;
+    let (mut tx, mut _rx) = ws.split();
+
+    while let Ok(event) = rx.recv().await {
+        let json = match serde_json::to_string(&event) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::warn!("Failed to serialize task event: {}", e);
+                continue;
+            }
+        };
         if tx.send(Message::text(json)).await.is_err() {
             break;
         }
@@ -1075,9 +814,30 @@ async fn handle_websocket(ws: WebSocket, id: String, state: AppState) {
 // Helpers
 // ============================================================================
 
-fn with_state(
-    state: AppState,
-) -> impl Filter<Extract = (AppState,), Error = Infallible> + Clone {
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: String,
+}
+
+fn error_reply(
+    status: StatusCode,
+    error: impl Into<String>,
+) -> warp::reply::WithStatus<warp::reply::Json> {
+    warp::reply::with_status(
+        warp::reply::json(&ErrorResponse {
+            error: error.into(),
+        }),
+        status,
+    )
+}
+
+fn parse_task_id(id: &str) -> Result<TaskId, warp::reply::WithStatus<warp::reply::Json>> {
+    Uuid::parse_str(id)
+        .map(TaskId)
+        .map_err(|_| error_reply(StatusCode::BAD_REQUEST, "Invalid task ID"))
+}
+
+fn with_state(state: AppState) -> impl Filter<Extract = (AppState,), Error = Infallible> + Clone {
     warp::any().map(move || state.clone())
 }
 
@@ -1129,282 +889,69 @@ fn extract_password_from_query(raw_query: &str) -> Option<String> {
             return urlencoding::decode(value).ok().map(|v| v.into_owned());
         }
     }
-
     None
 }
 
 async fn handle_rejection(err: warp::Rejection) -> Result<impl Reply, Infallible> {
     if err.find::<AuthError>().is_some() {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Unauthorized".to_string(),
-            }),
-            StatusCode::UNAUTHORIZED,
-        ));
+        return Ok(error_reply(StatusCode::UNAUTHORIZED, "Unauthorized"));
     }
-
     if err.is_not_found() {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Not Found".to_string(),
-            }),
-            StatusCode::NOT_FOUND,
-        ));
+        return Ok(error_reply(StatusCode::NOT_FOUND, "Not Found"));
     }
-
     if err.find::<InvalidQuery>().is_some() {
-        tracing::warn!("Invalid query received: {:?}", err);
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Invalid query".to_string(),
-            }),
-            StatusCode::BAD_REQUEST,
-        ));
+        return Ok(error_reply(StatusCode::BAD_REQUEST, "Invalid query"));
     }
-
     tracing::error!("Unhandled API rejection: {:?}", err);
-    Ok(warp::reply::with_status(
-        warp::reply::json(&ErrorResponse {
-            error: "Internal Server Error".to_string(),
-        }),
+    Ok(error_reply(
         StatusCode::INTERNAL_SERVER_ERROR,
+        "Internal Server Error",
     ))
 }
 
-fn task_output_path(env_dir: &Path, task_id: TaskId) -> PathBuf {
-    env_dir.join(format!("task-{}.jsonl", task_id))
+async fn pick_agent(state: AppState, host: Option<&str>) -> Result<ConnectedAgent, StateError> {
+    if let Some(host) = host {
+        return state
+            .get_agent_for_host(host)
+            .await
+            .ok_or_else(|| StateError::HostNotConnected(host.to_string()));
+    }
+
+    let agents = state.list_agents().await;
+    match agents.len() {
+        0 => Err(StateError::NoAgentsConnected),
+        1 => Ok(agents[0].clone()),
+        _ => Err(StateError::HostRequired),
+    }
 }
 
-async fn read_output_events(path: &Path) -> Result<Vec<AgentEvent>, std::io::Error> {
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-
-    let file = File::open(path).await?;
-    let mut lines = BufReader::new(file).lines();
-    let mut events = Vec::new();
-
-    while let Some(line) = lines.next_line().await? {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Ok(event) = serde_json::from_str::<AgentEvent>(trimmed) {
-            events.push(event);
+fn state_error_status(err: &StateError) -> StatusCode {
+    match err {
+        StateError::HostRequired => StatusCode::BAD_REQUEST,
+        StateError::HostNotConnected(_) => StatusCode::NOT_FOUND,
+        StateError::NoAgentsConnected => StatusCode::SERVICE_UNAVAILABLE,
+        StateError::AgentDisconnected | StateError::AgentTimeout => StatusCode::SERVICE_UNAVAILABLE,
+        StateError::RemoteError { status, .. } => {
+            StatusCode::from_u16(*status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
-
-    Ok(events)
-}
-
-struct DiffResult {
-    staged: String,
-    unstaged: String,
-}
-
-async fn load_git_diff(worktree_path: &Path, base_branch: &str) -> Result<DiffResult, std::io::Error> {
-    // Staged changes: diff between base branch and index (staged files)
-    let staged_output = Command::new("git")
-        .args(["diff", "--cached", base_branch])
-        .current_dir(worktree_path)
-        .output()
-        .await?;
-
-    if !staged_output.status.success() {
-        let stderr = String::from_utf8_lossy(&staged_output.stderr);
-        if !stderr.trim().is_empty() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                stderr.to_string(),
-            ));
-        }
-    }
-
-    let staged = String::from_utf8_lossy(&staged_output.stdout).to_string();
-
-    // Unstaged changes: diff between index and working tree
-    let unstaged_output = Command::new("git")
-        .args(["diff"])
-        .current_dir(worktree_path)
-        .output()
-        .await?;
-
-    if !unstaged_output.status.success() {
-        let stderr = String::from_utf8_lossy(&unstaged_output.stderr);
-        if !stderr.trim().is_empty() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                stderr.to_string(),
-            ));
-        }
-    }
-
-    let mut unstaged = String::from_utf8_lossy(&unstaged_output.stdout).to_string();
-
-    // Untracked files (also considered unstaged)
-    let untracked = Command::new("git")
-        .args(["ls-files", "--others", "--exclude-standard"])
-        .current_dir(worktree_path)
-        .output()
-        .await?;
-
-    if !untracked.status.success() {
-        let stderr = String::from_utf8_lossy(&untracked.stderr);
-        if !stderr.trim().is_empty() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                stderr.to_string(),
-            ));
-        }
-    }
-
-    for path in String::from_utf8_lossy(&untracked.stdout).lines() {
-        if path.trim().is_empty() {
-            continue;
-        }
-        let untracked_diff = Command::new("git")
-            .args(["diff", "--no-index", "--", "/dev/null", path])
-            .current_dir(worktree_path)
-            .output()
-            .await?;
-
-        let status = untracked_diff.status;
-        if !status.success() && status.code() != Some(1) {
-            let stderr = String::from_utf8_lossy(&untracked_diff.stderr);
-            if !stderr.trim().is_empty() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    stderr.to_string(),
-                ));
-            }
-        }
-
-        let chunk = String::from_utf8_lossy(&untracked_diff.stdout);
-        if !chunk.trim().is_empty() {
-            if !unstaged.is_empty() && !unstaged.ends_with('\n') {
-                unstaged.push('\n');
-            }
-            unstaged.push_str(&chunk);
-        }
-    }
-
-    Ok(DiffResult { staged, unstaged })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use slopcoder_core::environment::{Environment, EnvironmentConfig};
-    use tempfile::TempDir;
-    use tokio::process::Command;
-    use slopcoder_core::anyagent::AgentKind;
+    use super::extract_password_from_query;
 
-    async fn setup_test_env() -> (TempDir, Environment) {
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let base_path = temp_dir.path().to_path_buf();
-        let bare_path = base_path.join("bare");
-        tokio::fs::create_dir_all(&bare_path).await.unwrap();
-
-        // init bare
-        Command::new("git").args(["init", "--bare", "--initial-branch=main"]).current_dir(&bare_path).status().await.unwrap();
-
-        // clone to setup main
-        let clone_path = base_path.join("temp_clone");
-        Command::new("git").args(["clone", bare_path.to_str().unwrap(), clone_path.to_str().unwrap()]).status().await.unwrap();
-
-        // config
-        Command::new("git").args(["config", "user.email", "test@example.com"]).current_dir(&clone_path).status().await.unwrap();
-        Command::new("git").args(["config", "user.name", "Test User"]).current_dir(&clone_path).status().await.unwrap();
-
-        // commit
-        tokio::fs::write(clone_path.join("README.md"), "# Test").await.unwrap();
-        Command::new("git").args(["add", "."]).current_dir(&clone_path).status().await.unwrap();
-        Command::new("git").args(["commit", "-m", "Init"]).current_dir(&clone_path).status().await.unwrap();
-        Command::new("git").args(["push", "origin", "main"]).current_dir(&clone_path).status().await.unwrap();
-
-        let env = Environment {
-            name: "test-env".to_string(),
-            directory: base_path,
-        };
-
-        (temp_dir, env)
-    }
-
-    #[tokio::test]
-    async fn test_merge_task_success() {
-        let (_temp_dir, env) = setup_test_env().await;
-
-        // Create state
-        let config = EnvironmentConfig {
-            new_environments_directory: std::env::temp_dir(),
-            environments: vec![env.clone()],
-        };
-        let state = AppState::with_config(config);
-
-        // Create task and feature branch worktree
-        let feature_branch = "feature/test-merge";
-        let worktree_path = env.create_worktree_from_base("main", feature_branch).await.unwrap();
-        
-        // config user in worktree
-        Command::new("git").args(["config", "user.email", "test@example.com"]).current_dir(&worktree_path).status().await.unwrap();
-        Command::new("git").args(["config", "user.name", "Test User"]).current_dir(&worktree_path).status().await.unwrap();
-
-        let task = Task::new(
-            AgentKind::Codex,
-            env.name.clone(),
-            Some("main".to_string()),
-            feature_branch.to_string(),
-            worktree_path.clone(),
+    #[test]
+    fn test_extract_password() {
+        assert_eq!(
+            extract_password_from_query("foo=bar&password=abc123"),
+            Some("abc123".to_string())
         );
-        state.insert_task(task.clone()).await.unwrap();
-
-        // Make a change in feature branch
-        tokio::fs::write(worktree_path.join("new_feature.txt"), "Feature content").await.unwrap();
-        Command::new("git").args(["add", "."]).current_dir(&worktree_path).status().await.unwrap();
-        Command::new("git").args(["commit", "-m", "Add feature"]).current_dir(&worktree_path).status().await.unwrap();
-
-        // Call merge
-        let res = merge_task(task.id.to_string(), state.clone()).await.unwrap();
-        let resp = res.into_response();
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        // Verify merge in main worktree
-        let main_worktree = env.worktree_path("main");
-        assert!(main_worktree.exists());
-        assert!(main_worktree.join("new_feature.txt").exists());
-        
-        let content = tokio::fs::read_to_string(main_worktree.join("new_feature.txt")).await.unwrap();
-        assert_eq!(content, "Feature content");
-    }
-
-    #[tokio::test]
-    async fn test_merge_fails_unstaged_changes() {
-        let (_temp_dir, env) = setup_test_env().await;
-
-        let config = EnvironmentConfig {
-            new_environments_directory: std::env::temp_dir(),
-            environments: vec![env.clone()],
-        };
-        let state = AppState::with_config(config);
-
-        let feature_branch = "feature/test-dirty";
-        let worktree_path = env.create_worktree_from_base("main", feature_branch).await.unwrap();
-
-        let task = Task::new(
-            AgentKind::Codex,
-            env.name.clone(),
-            Some("main".to_string()),
-            feature_branch.to_string(),
-            worktree_path.clone(),
+        assert_eq!(
+            extract_password_from_query("password=hello%20world"),
+            Some("hello world".to_string())
         );
-        state.insert_task(task.clone()).await.unwrap();
-
-        // Make a dirty change
-        tokio::fs::write(worktree_path.join("dirty.txt"), "Dirty").await.unwrap();
-
-        // Call merge
-        let res = merge_task(task.id.to_string(), state.clone()).await.unwrap();
-        let resp = res.into_response();
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(extract_password_from_query("foo=bar"), None);
+        assert_eq!(extract_password_from_query(""), None);
     }
 }

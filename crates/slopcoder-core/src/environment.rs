@@ -138,14 +138,21 @@ impl EnvironmentConfig {
         // Clone, make initial commit, and push
         let temp_clone = env_dir.join("temp_clone");
         let output = Command::new("git")
-            .args(["clone", bare_path.to_str().unwrap(), temp_clone.to_str().unwrap()])
+            .args([
+                "clone",
+                bare_path.to_str().unwrap(),
+                temp_clone.to_str().unwrap(),
+            ])
             .output()
             .await
             .map_err(|e| EnvironmentError::GitInitError(e.to_string()))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(EnvironmentError::GitInitError(format!("Clone failed: {}", stderr)));
+            return Err(EnvironmentError::GitInitError(format!(
+                "Clone failed: {}",
+                stderr
+            )));
         }
 
         // Configure git user
@@ -162,9 +169,12 @@ impl EnvironmentConfig {
             .await;
 
         // Create initial README
-        tokio::fs::write(temp_clone.join("README.md"), format!("# {}\n\nCreated by Slopcoder.\n", name))
-            .await
-            .map_err(|e| EnvironmentError::GitInitError(e.to_string()))?;
+        tokio::fs::write(
+            temp_clone.join("README.md"),
+            format!("# {}\n\nCreated by Slopcoder.\n", name),
+        )
+        .await
+        .map_err(|e| EnvironmentError::GitInitError(e.to_string()))?;
 
         // Add and commit
         let output = Command::new("git")
@@ -176,7 +186,10 @@ impl EnvironmentConfig {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(EnvironmentError::GitInitError(format!("Add failed: {}", stderr)));
+            return Err(EnvironmentError::GitInitError(format!(
+                "Add failed: {}",
+                stderr
+            )));
         }
 
         let output = Command::new("git")
@@ -188,7 +201,10 @@ impl EnvironmentConfig {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(EnvironmentError::GitInitError(format!("Commit failed: {}", stderr)));
+            return Err(EnvironmentError::GitInitError(format!(
+                "Commit failed: {}",
+                stderr
+            )));
         }
 
         // Push to origin
@@ -201,7 +217,10 @@ impl EnvironmentConfig {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(EnvironmentError::GitInitError(format!("Push failed: {}", stderr)));
+            return Err(EnvironmentError::GitInitError(format!(
+                "Push failed: {}",
+                stderr
+            )));
         }
 
         // Remove temp clone
@@ -408,7 +427,10 @@ environments:
             name: "test".to_string(),
             directory: PathBuf::from("/tmp/test-project"),
         };
-        assert_eq!(env.bare_repo_path(), PathBuf::from("/tmp/test-project/bare"));
+        assert_eq!(
+            env.bare_repo_path(),
+            PathBuf::from("/tmp/test-project/bare")
+        );
     }
 
     #[test]

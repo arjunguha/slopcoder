@@ -156,13 +156,14 @@ impl PersistentTaskStore {
     async fn save_environment(&self, env_name: &str) -> Result<(), PersistenceError> {
         tracing::debug!("save_environment called for '{}'", env_name);
 
-        let env_dir = self
-            .env_directories
-            .get(env_name)
-            .ok_or_else(|| {
-                tracing::error!("Environment '{}' not found in directories: {:?}", env_name, self.env_directories.keys().collect::<Vec<_>>());
-                PersistenceError::DirectoryNotFound(PathBuf::from(env_name))
-            })?;
+        let env_dir = self.env_directories.get(env_name).ok_or_else(|| {
+            tracing::error!(
+                "Environment '{}' not found in directories: {:?}",
+                env_name,
+                self.env_directories.keys().collect::<Vec<_>>()
+            );
+            PersistenceError::DirectoryNotFound(PathBuf::from(env_name))
+        })?;
 
         let tasks: Vec<Task> = self
             .tasks
@@ -256,10 +257,7 @@ impl PersistentTaskStore {
         }
 
         let count = stale_tasks.len();
-        tracing::info!(
-            "Cleaning up {} tasks with missing worktrees",
-            count
-        );
+        tracing::info!("Cleaning up {} tasks with missing worktrees", count);
 
         // Collect affected environments
         let mut affected_envs: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -292,7 +290,12 @@ mod tests {
     use chrono::Utc;
     use tempfile::TempDir;
 
-    fn create_test_task(env: &str, base_branch: Option<&str>, feature_branch: &str, worktree: PathBuf) -> Task {
+    fn create_test_task(
+        env: &str,
+        base_branch: Option<&str>,
+        feature_branch: &str,
+        worktree: PathBuf,
+    ) -> Task {
         Task {
             id: TaskId::new(),
             agent: AgentKind::Codex,
@@ -312,7 +315,12 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().join("tasks.yaml");
 
-        let task = create_test_task("test-env", Some("main"), "feature/test", temp_dir.path().join("worktree"));
+        let task = create_test_task(
+            "test-env",
+            Some("main"),
+            "feature/test",
+            temp_dir.path().join("worktree"),
+        );
         let file = TasksFile {
             tasks: vec![task.clone()],
         };
@@ -404,7 +412,12 @@ mod tests {
         let mut store = PersistentTaskStore::new();
         store.register_environment("my-project".to_string(), temp_dir.path().to_path_buf());
 
-        let task = create_test_task("my-project", Some("main"), "feature-branch", worktree.clone());
+        let task = create_test_task(
+            "my-project",
+            Some("main"),
+            "feature-branch",
+            worktree.clone(),
+        );
         let task_id = task.id;
         store.insert(task).await.unwrap();
 

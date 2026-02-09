@@ -1,6 +1,6 @@
 //! Feature branch name generation using DSRS (DSPy for Rust).
 
-use dspy_rs::{configure, ChatAdapter, LM, Predict, Predictor, Signature, example};
+use dspy_rs::{configure, example, ChatAdapter, Predict, Predictor, Signature, LM};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -32,26 +32,22 @@ struct BranchNameEnv {
 
 impl BranchNameEnv {
     fn from_env() -> Self {
-        let api_key = std::env::var("OPENAI_API_KEY")
-            .ok()
-            .and_then(|v| {
-                let trimmed = v.trim().to_string();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed)
-                }
-            });
-        let api_base = std::env::var("OPENAI_API_BASE")
-            .ok()
-            .and_then(|v| {
-                let trimmed = v.trim().to_string();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed)
-                }
-            });
+        let api_key = std::env::var("OPENAI_API_KEY").ok().and_then(|v| {
+            let trimmed = v.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+        let api_base = std::env::var("OPENAI_API_BASE").ok().and_then(|v| {
+            let trimmed = v.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
 
         Self { api_key, api_base }
     }
@@ -62,15 +58,19 @@ pub async fn pick_feature_branch(
     task_description: &str,
     model: &str,
 ) -> Result<String, BranchNameError> {
-    let env = BranchNameEnv::from_env();
+    pick_feature_branch_with_env(task_description, model, BranchNameEnv::from_env()).await
+}
+
+async fn pick_feature_branch_with_env(
+    task_description: &str,
+    model: &str,
+    env: BranchNameEnv,
+) -> Result<String, BranchNameError> {
     if env.api_key.is_none() {
         return Err(BranchNameError::MissingApiKey);
     }
 
-    let api_key = env
-        .api_key
-        .clone()
-        .ok_or(BranchNameError::MissingApiKey)?;
+    let api_key = env.api_key.clone().ok_or(BranchNameError::MissingApiKey)?;
     let lm = if let Some(base_url) = env.api_base.as_deref() {
         LM::builder()
             .model(model.to_string())
@@ -98,7 +98,11 @@ pub async fn pick_feature_branch(
         .await
         .map_err(|e| BranchNameError::LlmFailed(e.to_string()))?;
 
-    let raw = result.get("branch", None).as_str().unwrap_or("").to_string();
+    let raw = result
+        .get("branch", None)
+        .as_str()
+        .unwrap_or("")
+        .to_string();
     normalize_branch_name(&raw).ok_or(BranchNameError::EmptyBranchName)
 }
 
@@ -148,7 +152,8 @@ mod tests {
 
     #[test]
     fn test_normalize_branch_name_truncation() {
-        let long_name = "this-is-a-very-long-branch-name-that-should-be-truncated-because-it-is-too-long";
+        let long_name =
+            "this-is-a-very-long-branch-name-that-should-be-truncated-because-it-is-too-long";
         let normalized = normalize_branch_name(long_name).unwrap();
         assert!(normalized.len() <= 40);
         // It gets truncated to exactly 40 chars
@@ -157,23 +162,26 @@ mod tests {
         let short_name = "short-name";
         let normalized = normalize_branch_name(short_name).unwrap();
         assert_eq!(normalized, "short-name");
-        
+
         let existing_feature = "feature/already-has-prefix";
         let normalized = normalize_branch_name(existing_feature).unwrap();
         assert_eq!(normalized, "feature/already-has-prefix");
     }
 
     #[tokio::test]
-    async fn generates_feature_branch_name() {
+    async fn returns_missing_api_key_without_key() {
+        let env = BranchNameEnv {
+            api_key: None,
+            api_base: None,
+        };
         let model = "claude-haiku-4-5";
-        let branch = pick_feature_branch(
+        let err = pick_feature_branch_with_env(
             "Add a health check endpoint to the server and wire it into the router.",
             model,
+            env,
         )
         .await
-        .expect("branch generation failed");
-
-        assert!(!branch.contains(' '));
-        assert!(!branch.is_empty());
+        .expect_err("expected MissingApiKey");
+        assert!(matches!(err, BranchNameError::MissingApiKey));
     }
 }

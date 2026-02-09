@@ -30,7 +30,7 @@ function TaskCard(props: { task: Task }) {
     >
       <div class="flex items-center justify-between mb-2">
         <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">
-          {props.task.environment}/{props.task.feature_branch}
+          {props.task.host}/{props.task.environment}/{props.task.feature_branch}
         </h3>
         <StatusBadge status={props.task.status} />
       </div>

@@ -1,9 +1,8 @@
 # Slopcoder
 
-Slopcoder is a web-based frontend to coding agents that run on your local
-server. If you secure access to your server, you get the benefits of web-based
-access to agents, without the headache of configuring isolated environments on
-third-party infrastructure.
+Slopcoder is a web-based frontend to coding agents that run on one or more
+`slopagent` workers. You run one `slopcoder-server` coordinator (usually on
+your desktop) and connect multiple agents (local or remote) over WebSocket.
 
 
 <img src="slopcoder.jpg" alt="Screenshot" width="50%" />
@@ -13,16 +12,17 @@ third-party infrastructure.
 Slopcoder relies on TypeScript and Rust. The simplest way to build it from
 source is to run `make all`.
 
-## Using Slopcoder
+## Using Slopcoder (Coordinator + Agents)
 
 Slopcoder relies on git worktrees. If you don't know how to use them, you won't
 be able to use Slopcoder.
 
-Slopcoder makes some assumptions about how you organize local copies of
-your repositories. For a repository R, it assumes you have a dedicated
-directory, where R/bare is a bare clone of the repository and R/X, R/Y, etc.
-are worktrees. Slopcoder will create a file R/tasks.yaml that tracks the
-state of its agents, as well as .jsonl files in R that hold the agents' logs.
+Each `slopagent` has its own `environments.yaml` and manages repositories local
+to that host. For a repository `R`, each agent assumes:
+- `R/bare` is a bare clone.
+- `R/<branch-worktree>` directories are Git worktrees.
+- `R/tasks.yaml` stores task state for that environment.
+- `R/task-<id>.jsonl` stores streamed task output.
 
 You should not modify the .jsonl files or tasks.yaml. However, you are free to
 directly update, or even delete, each worktree. When you create a new task from
@@ -31,10 +31,10 @@ in a new worktree. When the agent is done, it is up to you use the command-line
 on your local machine to merge the changes into another branch, make your own
 changes, or discard the branch entirely.
 
-All you need to do is create a YAML file that specifies where these directories
-are. Here is an example:
+Create `environments.yaml` on each host where a `slopagent` runs:
 
 ```yaml
+new_environments_directory: "/path/to/parent/for/new/envs"
 environments:
   - name: "MultiPL-E"
     directory: "/scratch/arjun-nosudo/repos/nuprl/MultiPL-E"
@@ -54,18 +54,36 @@ drwxrwx---+ 14 arjun-nosudo arjun-nosudo  4096 Jan  3 09:33 remove_logprobs2
 The subdirectory bare is the bare clone, and the two other directories are
 worktrees that Slopcoder created.
 
-You can start Slopcoder like this:
+Start the coordinator:
 
 ```bash
-slopcoder-server environments.yaml --addr 127.0.0.1:8080
+slopcoder-server --addr 127.0.0.1:8080
 ```
+
+By default, `slopcoder-server` generates a random password and prints it on
+startup. Use that password in the web UI prompt and for each `slopagent`.
+
+Start an agent (local or remote):
+
+```bash
+slopagent environments.yaml --server ws://127.0.0.1:8080
+```
+
+`slopagent` will prompt for the password in the terminal unless `--password` or
+`--no-password` is supplied. You can override the host label shown in the UI:
+
+```bash
+slopagent environments.yaml --server ws://127.0.0.1:8080 --name laptop-local
+```
+
+Agents can connect/disconnect dynamically; the UI updates hosts/environments
+from currently connected agents.
 
 ## Securing Slopcoder
 
 Slopcoder runs agents with all guardrails off, and in a shared execution
-environment. Not only can the agents see and modify each others' work, but they
-can also see the Slopcoder process. Moreover, Slopcoder does not have any
-authentication.
+environment. Not only can agents on the same host see/modify each others' work,
+they can also inspect local processes on that host.
 
 I personally run Slopcoder as an unprivileged user that is not in sudoers. I
 bind it to an IP address on a Wireguard VPN that I run, and configure the
@@ -177,5 +195,4 @@ And these were the followups:
 11. So I just ran git worktree remove -f ../main in the MultiPL-E/bare
     directory from the CLI. But, when I reload the running server, the task
     still appears. In this situation, you should rebuild tasks.yaml
-
 

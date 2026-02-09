@@ -1,4 +1,5 @@
 import type {
+  Host,
   Environment,
   BranchesResponse,
   Task,
@@ -79,6 +80,10 @@ export async function listEnvironments(): Promise<Environment[]> {
   return fetchJson("/api/environments");
 }
 
+export async function listHosts(): Promise<Host[]> {
+  return fetchJson("/api/hosts");
+}
+
 export async function createEnvironment(req: CreateEnvironmentRequest): Promise<Environment> {
   return fetchJson("/api/environments", {
     method: "POST",
@@ -86,9 +91,10 @@ export async function createEnvironment(req: CreateEnvironmentRequest): Promise<
   });
 }
 
-export async function listBranches(envName: string): Promise<string[]> {
+export async function listBranches(envName: string, host?: string): Promise<string[]> {
+  const query = host ? `?host=${encodeURIComponent(host)}` : "";
   const data = await fetchJson<BranchesResponse>(
-    `/api/environments/${encodeURIComponent(envName)}/branches`
+    `/api/environments/${encodeURIComponent(envName)}/branches${query}`
   );
   return data.branches;
 }

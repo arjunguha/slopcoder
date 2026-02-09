@@ -2,10 +2,11 @@
 
 ## 1. Purpose and Scope
 
-Slopcoder is a local-first web application for running coding agents against Git repositories using Git worktrees.
+Slopcoder is a coordinator/agent web application for running coding agents against Git repositories using Git worktrees.
 
 It provides:
-- A Rust backend that manages environments, tasks, agent process lifecycle, persistence, and streaming events.
+- A Rust coordinator backend that serves the web UI/API and routes work to connected agents.
+- A Rust `slopagent` worker process that owns local environments, tasks, persistence, and agent execution on each host.
 - A SolidJS frontend for creating tasks, monitoring execution, sending follow-up prompts, reviewing diffs, and merging work.
 - A core Rust library (`slopcoder-core`) that isolates environment, task, persistence, branch naming, and agent integration logic so behavior is testable independently from HTTP and UI layers.
 
@@ -24,11 +25,18 @@ The system is intentionally designed for trusted/self-hosted operation rather th
 - Feature-branch auto-generation via DSRS (`dspy-rs`).
 
 2. `slopcoder-server` (`crates/slopcoder-server`)
-- Warp-based HTTP + WebSocket server.
-- Route handlers for environments/tasks.
-- Startup validation and state initialization.
-- Task execution orchestration, event fan-out, interruption, merge workflow.
-- Optional password auth via header/query.
+- Warp-based coordinator HTTP + WebSocket server.
+- Tracks connected agents and host metadata.
+- Aggregates environments/tasks across hosts and forwards task/environment RPC calls to the selected agent.
+- Relays live task events from agents to browser WebSocket subscribers.
+- Password auth for both browser API calls and agent connections.
+
+3. `slopagent` (`crates/slopagent`)
+- Runs on each managed host (including localhost if desired).
+- Loads per-host `environments.yaml`.
+- Owns local task lifecycle, persistence, branch creation, merge/diff/output operations.
+- Connects outbound to coordinator `/agent/connect` and serves typed RPC requests.
+- Streams task events back to coordinator.
 
 3. Frontend (`frontend`)
 - SolidJS single-page app with routes for task list/new task/task detail.
@@ -38,11 +46,12 @@ The system is intentionally designed for trusted/self-hosted operation rather th
 
 ### 2.2 Deployment Model
 
-- Backend and frontend are served from the same process (`slopcoder-server`):
+- Backend and frontend are served from the coordinator process (`slopcoder-server`):
   - `/api/*` routes for JSON APIs and task WebSocket streams.
+  - `/agent/connect` WebSocket endpoint for connected `slopagent` workers.
   - Static frontend assets from `frontend/dist` (or overridden static dir).
-- Configuration is file-based (`environments.yaml`).
-- Persistent task metadata is file-based (`tasks.yaml` and `task-<id>.jsonl` inside each environment directory).
+- Each `slopagent` uses file-based per-host configuration (`environments.yaml`).
+- Persistent task metadata remains file-based per environment (`tasks.yaml` and `task-<id>.jsonl`), written by the owning agent host.
 
 ## 3. Core Domain Model
 
@@ -158,27 +167,19 @@ When feature branch is omitted in task creation:
 
 ## 7. Server State and API Design
 
-### 7.1 AppState
+### 7.1 Coordinator AppState
 
 Implemented in `crates/slopcoder-server/src/state.rs`.
 
 State owns:
-- Environment config.
-- Persistent task store.
-- Per-task broadcast channels for WebSocket streaming.
-- Per-task oneshot interrupt channels.
-- Agent config.
-- Branch naming model and optional auth password.
+- Connected agent registry (host label, hostname, connection metadata).
+- Task-to-host routing map for RPC forwarding.
+- Per-task broadcast channels for browser WebSocket streaming.
+- Optional auth password.
 
 Startup behavior:
-- Load YAML config.
-- Validate `new_environments_directory`.
-- Validate each configured environment and branch listing.
-- Register environments into persistence layer.
-- Load/repair tasks from disk.
-
-Startup validation constraint:
-- Server startup fails fast if `new_environments_directory` is missing or not a directory, even when no password authentication is enabled.
+- Configure optional/random password.
+- Start API/UI server and accept dynamic agent connections.
 
 ### 7.2 Routes
 
@@ -187,7 +188,8 @@ Implemented in `crates/slopcoder-server/src/routes.rs`.
 Environment routes:
 - `GET /api/environments`
 - `POST /api/environments` (initialize new env)
-- `GET /api/environments/{name}/branches`
+- `GET /api/environments/{name}/branches?host=...`
+- `GET /api/hosts`
 
 Task routes:
 - `GET /api/tasks`
@@ -199,26 +201,20 @@ Task routes:
 - `POST /api/tasks/{id}/interrupt`
 - `POST /api/tasks/{id}/merge`
 - `GET /api/tasks/{id}/stream` (WebSocket)
+- `GET /agent/connect` (WebSocket; slopagent connection endpoint)
 
 Routing behavior:
 - API rejection recovery is scoped under `/api/*`, so non-API paths continue to static file and SPA fallback handlers instead of returning API JSON 404 payloads.
 - `500` API responses are logged with contextual server-side error messages, and unknown Warp rejections are logged before returning a generic JSON internal error to clients.
 - Auth query parsing treats missing query strings as empty input (instead of rejecting requests), preventing spurious `InvalidQuery` rejections on normal API calls without URL query parameters.
 
-### 7.3 Task run orchestration
+### 7.3 RPC and task orchestration
 
-`run_agent(...)` performs:
-1. Validate/load task.
-2. Open append log file (`task-<id>.jsonl`).
-3. Mark run started in persistent state.
-4. Create event + interrupt channels.
-5. Spawn or resume selected agent.
-6. For each streamed event:
-- update session ID when discovered,
-- append to JSONL log,
-- broadcast to subscribers.
-7. On interrupt: kill process, persist interrupted status.
-8. On completion: persist success/failure and final session ID.
+- Coordinator sends typed `AgentRequest` RPC envelopes to the selected host.
+- Agent responds with typed `AgentResponse` (or structured error status/message).
+- Running tasks emit `TaskEvent` envelopes from agent to coordinator.
+- Coordinator rebroadcasts those events to browser `/api/tasks/{id}/stream` subscribers.
+- All task execution/persistence/diff/merge logic executes on the agent host.
 
 ### 7.4 Diff and merge
 
@@ -234,12 +230,13 @@ Merge endpoint:
 
 ### 7.5 Authentication
 
-Optional password mode:
-- Enabled via `--password-prompt` at server startup.
+Password mode:
+- By default, coordinator generates a random password and prints it at startup.
+- Can be overridden with `--password`, prompted via `--password-prompt`, or disabled via `--no-password`.
 - Required value is checked against:
   - `X-Slopcoder-Password` header (REST), or
-  - `password` query parameter (WebSocket).
-- If no password configured, API is open.
+  - `password` query parameter (browser task websocket).
+- Agent websocket auth uses the same `X-Slopcoder-Password` header.
 
 ## 8. Frontend Design
 
@@ -272,6 +269,8 @@ Implemented in `frontend/src/api/client.ts`.
 Implemented in `frontend/src/components/Workspace.tsx` (`NewTaskPane`).
 
 - Triggered from per-environment `+` action in the left tree.
+- Environment identity is `(host, environment)`.
+- New Environment flow requires explicit host selection from connected agents.
 - Base branch selectable from live branch list for that environment.
 - Feature branch optional (auto-generated server-side if omitted).
 - Agent selection exposed in UI: `codex`, `claude`, `cursor`, `gemini`, `opencode`.
@@ -281,7 +280,7 @@ Implemented in `frontend/src/components/Workspace.tsx` (`NewTaskPane`).
 
 ### 8.4 Task list/detail
 
-- `Workspace.tsx` owns environment/task fetching and periodic refresh, and renders task selection as a left tree instead of a separate list page.
+- `Workspace.tsx` owns host/environment/task fetching and periodic refresh, and renders task selection as a host-aware left tree instead of a separate list page.
 - `TaskPane` within `Workspace.tsx` handles live stream + persisted output rendering, prompt continuation, status display, and merge action.
 - Right-pane tab model splits task content into explicit `Conversation` and `Diff` tabs.
 - `DiffViewer.tsx` remains the diff renderer for staged/unstaged changes.
@@ -311,5 +310,6 @@ Recent design-driven feature additions include:
 - Security model is intentionally minimal; deployment assumes trusted network context.
 - Persistence rewrites full environment task snapshots (`tasks.yaml`) rather than append-only incremental updates.
 - WebSocket streaming depends on in-memory channels for active runs; historical replay is via log file endpoint, not stream rewind.
+- Agent availability is dynamic; disconnected hosts disappear from active UI/API results until they reconnect.
 - OpenCode resume requires sidecar session map file because native session IDs are not UUIDs.
-- Agent availability is environment-dependent (CLI binaries/tool auth must already be present on host).
+- Agent capability remains host-dependent (CLI binaries/tool auth must already be present on that host).

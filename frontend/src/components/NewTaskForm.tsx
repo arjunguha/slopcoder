@@ -1,6 +1,12 @@
 import { createSignal, createResource, For, Show } from "solid-js";
 import { useNavigate } from "@solidjs/router";
-import { listEnvironments, listBranches, createTask, createEnvironment } from "../api/client";
+import {
+  listHosts,
+  listEnvironments,
+  listBranches,
+  createTask,
+  createEnvironment,
+} from "../api/client";
 import type { AgentKind } from "../types";
 
 const NEW_ENVIRONMENT_VALUE = "__new__";
@@ -8,13 +14,17 @@ const NEW_ENVIRONMENT_VALUE = "__new__";
 export default function NewTaskForm() {
   const navigate = useNavigate();
 
+  const [hosts] = createResource(listHosts);
   const [environments, { refetch: refetchEnvironments }] = createResource(listEnvironments);
   const [selectedEnv, setSelectedEnv] = createSignal("");
+  const [newEnvHost, setNewEnvHost] = createSignal("");
   const [newEnvName, setNewEnvName] = createSignal("");
   const [creatingEnv, setCreatingEnv] = createSignal(false);
-  const [branches] = createResource(selectedEnv, async (env) => {
-    if (!env || env === NEW_ENVIRONMENT_VALUE) return [];
-    return listBranches(env);
+  const [branches] = createResource(selectedEnv, async (envKey) => {
+    if (!envKey || envKey === NEW_ENVIRONMENT_VALUE) return [];
+    const [host, env] = envKey.split("::");
+    if (!host || !env) return [];
+    return listBranches(env, host);
   });
 
   const [baseBranch, setBaseBranch] = createSignal("");
@@ -25,6 +35,12 @@ export default function NewTaskForm() {
   const [error, setError] = createSignal("");
 
   const isNewEnvironment = () => selectedEnv() === NEW_ENVIRONMENT_VALUE;
+  const selectedEnvParts = () => {
+    if (isNewEnvironment()) return null;
+    const [host, env] = selectedEnv().split("::");
+    if (!host || !env) return null;
+    return { host, env };
+  };
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault();
@@ -32,19 +48,27 @@ export default function NewTaskForm() {
     setSubmitting(true);
 
     try {
-      let envName = selectedEnv();
+      let envHost = selectedEnvParts()?.host || "";
+      let envName = selectedEnvParts()?.env || "";
 
       // If creating a new environment, create it first
       if (isNewEnvironment()) {
         const trimmedName = newEnvName().trim();
+        const trimmedHost = newEnvHost().trim();
         if (!trimmedName) {
           setError("Please enter a name for the new environment");
           setSubmitting(false);
           return;
         }
+        if (!trimmedHost) {
+          setError("Please select a host for the new environment");
+          setSubmitting(false);
+          return;
+        }
         setCreatingEnv(true);
         try {
-          const newEnv = await createEnvironment({ name: trimmedName });
+          const newEnv = await createEnvironment({ host: trimmedHost, name: trimmedName });
+          envHost = newEnv.host;
           envName = newEnv.name;
           // Refetch environments to include the new one
           refetchEnvironments();
@@ -58,6 +82,7 @@ export default function NewTaskForm() {
       }
 
       const result = await createTask({
+        host: envHost,
         environment: envName,
         // For new environments, base branch defaults to "main" on the backend
         base_branch: isNewEnvironment() ? undefined : baseBranch() || undefined,
@@ -75,9 +100,9 @@ export default function NewTaskForm() {
 
   const isValid = () => {
     if (isNewEnvironment()) {
-      return newEnvName().trim() && prompt().trim();
+      return newEnvHost().trim() && newEnvName().trim() && prompt().trim();
     }
-    return selectedEnv() && baseBranch().trim() && prompt().trim();
+    return selectedEnvParts() && baseBranch().trim() && prompt().trim();
   };
 
   const inputClass = "w-full px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-400 dark:placeholder-gray-500";
@@ -106,6 +131,7 @@ export default function NewTaskForm() {
                 onChange={(e) => {
                   setSelectedEnv(e.currentTarget.value);
                   setBaseBranch("");
+                  setNewEnvHost("");
                   setNewEnvName("");
                 }}
                 class={inputClass}
@@ -113,13 +139,31 @@ export default function NewTaskForm() {
                 <option value="">Select</option>
                 <option value={NEW_ENVIRONMENT_VALUE}>+ New Environment</option>
                 <For each={environments()}>
-                  {(env) => <option value={env.name}>{env.name}</option>}
+                  {(env) => <option value={`${env.host}::${env.name}`}>{env.host}/{env.name}</option>}
                 </For>
               </select>
             </Show>
           </div>
 
           {/* New Environment Name - shown when creating new environment */}
+          <Show when={isNewEnvironment()}>
+            <div>
+              <label class="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Host
+              </label>
+              <select
+                value={newEnvHost()}
+                onChange={(e) => setNewEnvHost(e.currentTarget.value)}
+                class={inputClass}
+              >
+                <option value="">Select host</option>
+                <For each={hosts() || []}>
+                  {(host) => <option value={host.host}>{host.host}</option>}
+                </For>
+              </select>
+            </div>
+          </Show>
+
           <Show when={isNewEnvironment()}>
             <div>
               <label class="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">

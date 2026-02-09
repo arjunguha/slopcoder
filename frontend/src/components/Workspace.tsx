@@ -9,6 +9,7 @@ import {
 } from "solid-js";
 import { useParams } from "@solidjs/router";
 import {
+  listHosts,
   listEnvironments,
   listTasks,
   listBranches,
@@ -28,7 +29,7 @@ import DOMPurify from "dompurify";
 
 type RightMode =
   | { kind: "new-environment" }
-  | { kind: "new-task"; environment: string }
+  | { kind: "new-task"; host: string; environment: string }
   | { kind: "task"; taskId: string };
 
 type RightTab = "conversation" | "diff";
@@ -234,7 +235,7 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab }) {
           <div>
             <div class="text-xl font-bold text-gray-900 dark:text-gray-100">{task()!.feature_branch}</div>
             <div class="text-xs text-gray-500 dark:text-gray-400">
-              {task()!.environment} • base: {task()!.base_branch || "main"} • agent: {task()!.agent}
+              {task()!.host}/{task()!.environment} • base: {task()!.base_branch || "main"} • agent: {task()!.agent}
             </div>
           </div>
           <div class="flex items-center gap-2">
@@ -333,8 +334,10 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab }) {
 }
 
 function NewEnvironmentPane(props: {
-  onCreated: (environmentName: string, firstTaskId?: string) => void;
+  onCreated: (host: string, environmentName: string, firstTaskId?: string) => void;
 }) {
+  const [hosts] = createResource(listHosts);
+  const [selectedHost, setSelectedHost] = createSignal("");
   const [name, setName] = createSignal("");
   const [prompt, setPrompt] = createSignal("");
   const [agent, setAgent] = createSignal<AgentKind>("codex");
@@ -350,22 +353,23 @@ function NewEnvironmentPane(props: {
 
   const submit = async (e: Event) => {
     e.preventDefault();
-    if (!name().trim()) return;
+    if (!name().trim() || !selectedHost().trim()) return;
     setLoading(true);
     setError("");
     try {
-      await createEnvironment({ name: name().trim() });
+      await createEnvironment({ host: selectedHost().trim(), name: name().trim() });
       if (prompt().trim()) {
         const task = await createTask({
+          host: selectedHost().trim(),
           environment: name().trim(),
           prompt: prompt(),
           agent: agent(),
           base_branch: baseBranch().trim() || undefined,
           feature_branch: featureBranch().trim() || undefined,
         });
-        props.onCreated(name().trim(), task.id);
+        props.onCreated(selectedHost().trim(), name().trim(), task.id);
       } else {
-        props.onCreated(name().trim());
+        props.onCreated(selectedHost().trim(), name().trim());
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create environment");
@@ -383,7 +387,22 @@ function NewEnvironmentPane(props: {
       </div>
 
       <div class="mt-4">
-        <div class="grid gap-3 md:grid-cols-4 mb-3">
+        <div class="grid gap-3 md:grid-cols-5 mb-3">
+          <select
+            value={selectedHost()}
+            onChange={(e) => setSelectedHost(e.currentTarget.value)}
+            class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+          >
+            <option value="">Select host</option>
+            <For each={hosts() || []}>
+              {(host) => (
+                <option value={host.host}>
+                  {host.host}
+                  {host.host !== host.hostname ? ` (${host.hostname})` : ""}
+                </option>
+              )}
+            </For>
+          </select>
           <input
             value={name()}
             onInput={(e) => setName(e.currentTarget.value)}
@@ -425,12 +444,17 @@ function NewEnvironmentPane(props: {
         <div class="mt-3 flex justify-end">
           <button
             type="submit"
-            disabled={loading() || !name().trim()}
+            disabled={loading() || !name().trim() || !selectedHost().trim()}
             class="rounded-lg bg-blue-600 px-5 py-2 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading() ? "Creating..." : "Create Environment"}
           </button>
         </div>
+        <Show when={!hosts.loading && (hosts() || []).length === 0}>
+          <div class="mt-2 text-sm text-amber-600 dark:text-amber-400">
+            No slopagents connected. Start a slopagent to create environments.
+          </div>
+        </Show>
         <Show when={error()}>
           <div class="mt-2 text-sm text-red-600 dark:text-red-400">{error()}</div>
         </Show>
@@ -440,10 +464,14 @@ function NewEnvironmentPane(props: {
 }
 
 function NewTaskPane(props: {
+  host: string;
   environment: string;
   onCreated: (taskId: string) => void;
 }) {
-  const [branches] = createResource(() => props.environment, listBranches);
+  const [branches] = createResource(
+    () => `${props.host}::${props.environment}`,
+    () => listBranches(props.environment, props.host)
+  );
   const [baseBranch, setBaseBranch] = createSignal("");
   const [featureBranch, setFeatureBranch] = createSignal("");
   const [agent, setAgent] = createSignal<AgentKind>("codex");
@@ -463,6 +491,7 @@ function NewTaskPane(props: {
     setError("");
     try {
       const task = await createTask({
+        host: props.host,
         environment: props.environment,
         prompt: prompt(),
         base_branch: baseBranch().trim() || undefined,
@@ -485,7 +514,7 @@ function NewTaskPane(props: {
             Let's Build
           </div>
           <div class="text-sm text-gray-500 dark:text-gray-400 mt-2">
-            {props.environment}
+            {props.host}/{props.environment}
           </div>
         </div>
       </div>
@@ -545,6 +574,7 @@ function NewTaskPane(props: {
 
 export default function Workspace() {
   const params = useParams();
+  const [hosts, { refetch: refetchHosts }] = createResource(listHosts);
   const [environments, { refetch: refetchEnvironments }] = createResource(listEnvironments);
   const [tasks, { refetch: refetchTasks }] = createResource(listTasks);
   const [expanded, setExpanded] = createSignal<Record<string, boolean>>({});
@@ -552,7 +582,11 @@ export default function Workspace() {
   const [tab, setTab] = createSignal<RightTab>("conversation");
 
   createEffect(() => {
-    const id = setInterval(() => refetchTasks(), 4000);
+    const id = setInterval(() => {
+      refetchHosts();
+      refetchEnvironments();
+      refetchTasks();
+    }, 4000);
     onCleanup(() => clearInterval(id));
   });
 
@@ -567,8 +601,9 @@ export default function Workspace() {
   const tasksByEnvironment = createMemo(() => {
     const grouped: Record<string, Task[]> = {};
     for (const task of tasks() || []) {
-      if (!grouped[task.environment]) grouped[task.environment] = [];
-      grouped[task.environment].push(task);
+      const key = `${task.host}::${task.environment}`;
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(task);
     }
     for (const key of Object.keys(grouped)) {
       grouped[key].sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
@@ -589,6 +624,28 @@ export default function Workspace() {
     <div class="h-screen bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
       <div class="h-full grid grid-cols-[320px_1fr]">
         <aside class="border-r border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 p-3 overflow-y-auto">
+          <div class="mb-4">
+            <h1 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Hosts</h1>
+            <Show when={hosts.loading}>
+              <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Loading hosts...</div>
+            </Show>
+            <div class="mt-2 space-y-1">
+              <For each={hosts() || []}>
+                {(host) => (
+                  <div class="rounded border border-gray-200 dark:border-gray-700 px-2 py-1 text-xs text-gray-700 dark:text-gray-300">
+                    <div class="font-medium">{host.host}</div>
+                    <Show when={host.host !== host.hostname}>
+                      <div class="text-[11px] text-gray-500 dark:text-gray-400">{host.hostname}</div>
+                    </Show>
+                  </div>
+                )}
+              </For>
+              <Show when={!hosts.loading && (hosts() || []).length === 0}>
+                <div class="text-xs text-amber-600 dark:text-amber-400">No connected slopagents.</div>
+              </Show>
+            </div>
+          </div>
+
           <div class="mb-3 flex items-center justify-between">
             <h1 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Environments</h1>
             <button
@@ -611,33 +668,33 @@ export default function Workspace() {
               <div class="mb-2">
                 <div class="flex items-center justify-between px-2 py-2">
                   <button
-                    onClick={() => toggleEnvironment(env.name)}
+                    onClick={() => toggleEnvironment(`${env.host}::${env.name}`)}
                     class="flex items-center gap-2 text-sm font-medium text-gray-800 dark:text-gray-200"
                   >
                     <span
                       class={`inline-block transition-transform ${
-                        expanded()[env.name] ? "rotate-90" : ""
+                        expanded()[`${env.host}::${env.name}`] ? "rotate-90" : ""
                       }`}
                     >
                       ▸
                     </span>
-                    {env.name}
+                    {env.host}/{env.name}
                   </button>
                   <button
                     onClick={() => {
-                      setMode({ kind: "new-task", environment: env.name });
+                      setMode({ kind: "new-task", host: env.host, environment: env.name });
                       setTab("conversation");
                     }}
                     class="rounded-md border border-gray-300 dark:border-gray-600 px-2 py-0.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-800"
-                    title={`Create task in ${env.name}`}
+                    title={`Create task in ${env.host}/${env.name}`}
                   >
                     +
                   </button>
                 </div>
 
-                <Show when={expanded()[env.name]}>
+                <Show when={expanded()[`${env.host}::${env.name}`]}>
                   <div class="pl-5 pr-1 py-1 space-y-1">
-                    <For each={tasksByEnvironment()[env.name] || []}>
+                    <For each={tasksByEnvironment()[`${env.host}::${env.name}`] || []}>
                       {(task) => (
                         <button
                           onClick={() => {
@@ -662,7 +719,7 @@ export default function Workspace() {
                         </button>
                       )}
                     </For>
-                    <Show when={(tasksByEnvironment()[env.name] || []).length === 0}>
+                    <Show when={(tasksByEnvironment()[`${env.host}::${env.name}`] || []).length === 0}>
                       <div class="text-xs text-gray-500 dark:text-gray-400 px-2 py-1">No tasks yet.</div>
                     </Show>
                   </div>
@@ -701,15 +758,15 @@ export default function Workspace() {
           <div class="flex-1 min-h-0">
             <Show when={mode().kind === "new-environment"}>
               <NewEnvironmentPane
-                onCreated={(environmentName, firstTaskId) => {
+                onCreated={(host, environmentName, firstTaskId) => {
                   refetchEnvironments();
                   refetchTasks();
-                  setExpanded((prev) => ({ ...prev, [environmentName]: true }));
+                  setExpanded((prev) => ({ ...prev, [`${host}::${environmentName}`]: true }));
                   if (firstTaskId) {
                     setMode({ kind: "task", taskId: firstTaskId });
                     setTab("conversation");
                   } else {
-                    setMode({ kind: "new-task", environment: environmentName });
+                    setMode({ kind: "new-task", host, environment: environmentName });
                     setTab("conversation");
                   }
                 }}
@@ -718,7 +775,8 @@ export default function Workspace() {
 
             <Show when={mode().kind === "new-task"}>
               <NewTaskPane
-                environment={(mode() as { kind: "new-task"; environment: string }).environment}
+                host={(mode() as { kind: "new-task"; host: string; environment: string }).host}
+                environment={(mode() as { kind: "new-task"; host: string; environment: string }).environment}
                 onCreated={(taskId) => {
                   refetchTasks();
                   setMode({ kind: "task", taskId });

@@ -3,11 +3,11 @@
 //! A task represents a single agent session running in a worktree,
 //! along with its execution history and prompts.
 
+use crate::anyagent::AgentKind;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
-use crate::anyagent::AgentKind;
 
 /// Unique identifier for a task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -136,7 +136,10 @@ impl Task {
     pub fn can_run(&self) -> bool {
         matches!(
             self.status,
-            TaskStatus::Pending | TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Interrupted
+            TaskStatus::Pending
+                | TaskStatus::Completed
+                | TaskStatus::Failed
+                | TaskStatus::Interrupted
         )
     }
 

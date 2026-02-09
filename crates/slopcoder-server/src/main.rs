@@ -3,8 +3,8 @@ mod state;
 
 use std::io::{self, Write};
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use uuid::Uuid;
 use warp::Filter;
 
 use state::AppState;
@@ -19,11 +19,11 @@ async fn main() {
 
     // Parse CLI args
     let mut args = std::env::args().skip(1);
-    let mut config_path: Option<PathBuf> = None;
     let mut addr_arg: Option<String> = None;
-    let mut static_dir_arg: Option<PathBuf> = None;
-    let mut branch_model = "claude-haiku-4-5".to_string();
+    let mut static_dir_arg: Option<std::path::PathBuf> = None;
     let mut password_prompt = false;
+    let mut no_password = false;
+    let mut explicit_password: Option<String> = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -31,33 +31,35 @@ async fn main() {
                 addr_arg = args.next();
             }
             "--static-dir" | "--assets" => {
-                static_dir_arg = args.next().map(PathBuf::from);
-            }
-            "--branch-model" => {
-                if let Some(value) = args.next() {
-                    branch_model = value;
-                }
+                static_dir_arg = args.next().map(std::path::PathBuf::from);
             }
             "--password-prompt" => {
                 password_prompt = true;
             }
+            "--password" => {
+                explicit_password = args.next();
+            }
+            "--no-password" => {
+                no_password = true;
+            }
             "-h" | "--help" => {
                 println!(
-                    "Usage: slopcoder-server [config.yaml] [--addr HOST:PORT] [--static-dir PATH] [--branch-model MODEL] [--password-prompt]\n\
-Defaults: config=environments.yaml, addr=127.0.0.1:8080, static-dir=frontend/dist, branch-model=claude-haiku-4-5"
+                    "Usage: slopcoder-server [--addr HOST:PORT] [--static-dir PATH] [--password VALUE|--password-prompt|--no-password]\n\
+Defaults: addr=127.0.0.1:8080, static-dir=frontend/dist, generated startup password enabled"
                 );
                 return;
             }
-            _ => {
-                if config_path.is_none() {
-                    config_path = Some(PathBuf::from(arg));
-                }
-            }
+            _ => {}
         }
     }
 
-    let config_path = config_path.unwrap_or_else(|| PathBuf::from("environments.yaml"));
-    let auth_password = if password_prompt {
+    let auth_password = if no_password {
+        tracing::warn!("API and agent authentication disabled (--no-password).");
+        None
+    } else if let Some(password) = explicit_password {
+        println!("Slopcoder password: {}", password);
+        Some(password)
+    } else if password_prompt {
         print!("Enter password: ");
         io::stdout().flush().expect("Failed to flush stdout");
         let mut input = String::new();
@@ -68,68 +70,16 @@ Defaults: config=environments.yaml, addr=127.0.0.1:8080, static-dir=frontend/dis
         if trimmed.is_empty() {
             None
         } else {
-            println!("Password set to: {}", trimmed);
+            println!("Slopcoder password: {}", trimmed);
             Some(trimmed)
         }
     } else {
-        None
+        let random_password = Uuid::new_v4().simple().to_string()[..16].to_string();
+        println!("Slopcoder password: {}", random_password);
+        Some(random_password)
     };
 
-    let api_key = std::env::var("OPENAI_API_KEY")
-        .ok()
-        .and_then(|v| if v.trim().is_empty() { None } else { Some(v) });
-    if api_key.is_none() {
-        tracing::warn!("OPENAI_API_KEY is not set; automatic branch naming will be unavailable.");
-    }
-    let api_base = std::env::var("OPENAI_API_BASE")
-        .ok()
-        .and_then(|v| if v.trim().is_empty() { None } else { Some(v) });
-    if api_base.is_none() {
-        tracing::warn!("OPENAI_API_BASE is not set; using the default OpenAI base URL.");
-    }
-
-    // Check if config exists
-    if !config_path.exists() {
-        tracing::error!("Config file not found: {}", config_path.display());
-        tracing::info!(
-            "Usage: slopcoder-server [config.yaml] [--addr HOST:PORT] [--static-dir PATH] [--branch-model MODEL] [--password-prompt]"
-        );
-        tracing::info!("Example config:");
-        tracing::info!(
-            r#"
-environments:
-  - name: "my-project"
-    directory: "/path/to/project"
-"#
-        );
-        std::process::exit(1);
-    }
-
-    // Load state
-    let state = match AppState::new(config_path.clone(), branch_model, auth_password).await {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("Startup checks failed: {}", e);
-            std::process::exit(1);
-        }
-    };
-
-    tracing::info!("Loaded config from {}", config_path.display());
-
-    // Log environment info
-    let config = state.get_config().await;
-    for env in &config.environments {
-        tracing::info!(
-            "Environment '{}' at {} (tasks.yaml: {})",
-            env.name,
-            env.directory.display(),
-            env.directory.join("tasks.yaml").display()
-        );
-    }
-
-    // Log task count
-    let tasks = state.list_tasks().await;
-    tracing::info!("Loaded {} tasks from disk", tasks.len());
+    let state = AppState::new(auth_password);
 
     // Build API routes
     let api_routes = routes::routes(state);
@@ -144,21 +94,21 @@ environments:
 
     // Static file serving for frontend
     let static_dir = static_dir_arg
-        .or_else(|| std::env::var("SLOPCODER_STATIC_DIR").ok().map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("frontend/dist"));
+        .or_else(|| {
+            std::env::var("SLOPCODER_STATIC_DIR")
+                .ok()
+                .map(std::path::PathBuf::from)
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("frontend/dist"));
 
     let static_files = warp::fs::dir(static_dir.clone());
 
     // Serve index.html for SPA routes (fallback for client-side routing)
     let index_html = warp::fs::file(static_dir.join("index.html"));
-    let spa_fallback = warp::any()
-        .and(warp::get())
-        .and(index_html);
+    let spa_fallback = warp::any().and(warp::get()).and(index_html);
 
     // Combine: API routes first, then static files, then SPA fallback
-    let routes = api_routes
-        .or(static_files)
-        .or(spa_fallback);
+    let routes = api_routes.or(static_files).or(spa_fallback);
 
     // Get address from args/env or use default (127.0.0.1:8080)
     let addr: SocketAddr = addr_arg

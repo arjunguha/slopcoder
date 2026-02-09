@@ -3,9 +3,9 @@
 use crate::claude_agent::ClaudeAgent;
 use crate::codex_agent::CodexAgent;
 use crate::cursor_agent::CursorAgent;
+use crate::events::AgentEvent;
 use crate::gemini_agent::GeminiAgent;
 use crate::opencode_agent::OpencodeAgent;
-use crate::events::AgentEvent;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -243,19 +243,23 @@ pub async fn resume_anyagent(
             Ok(Box::new(agent))
         }
         AgentKind::Claude => {
-            let agent = ClaudeAgent::resume(&config.claude, working_dir, session_id, prompt).await?;
+            let agent =
+                ClaudeAgent::resume(&config.claude, working_dir, session_id, prompt).await?;
             Ok(Box::new(agent))
         }
         AgentKind::Cursor => {
-            let agent = CursorAgent::resume(&config.cursor, working_dir, session_id, prompt).await?;
+            let agent =
+                CursorAgent::resume(&config.cursor, working_dir, session_id, prompt).await?;
             Ok(Box::new(agent))
         }
         AgentKind::Opencode => {
-            let agent = OpencodeAgent::resume(&config.opencode, working_dir, session_id, prompt).await?;
+            let agent =
+                OpencodeAgent::resume(&config.opencode, working_dir, session_id, prompt).await?;
             Ok(Box::new(agent))
         }
         AgentKind::Gemini => {
-            let agent = GeminiAgent::resume(&config.gemini, working_dir, session_id, prompt).await?;
+            let agent =
+                GeminiAgent::resume(&config.gemini, working_dir, session_id, prompt).await?;
             Ok(Box::new(agent))
         }
     }

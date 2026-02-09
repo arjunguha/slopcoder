@@ -84,9 +84,7 @@ impl CodexAgent {
             cmd.arg(arg);
         }
 
-        cmd.arg("resume")
-            .arg(session_id.to_string())
-            .arg(prompt);
+        cmd.arg("resume").arg(session_id.to_string()).arg(prompt);
 
         cmd.stdout(Stdio::piped())
             .stderr(Stdio::inherit())
