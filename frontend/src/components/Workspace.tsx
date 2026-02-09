@@ -583,6 +583,13 @@ export default function Workspace() {
   const hostsData = createMemo(() => hosts.latest ?? hosts() ?? []);
   const environmentsData = createMemo(() => environments.latest ?? environments() ?? []);
   const tasksData = createMemo(() => tasks.latest ?? tasks() ?? []);
+  const hostsById = createMemo(() => new Map(hostsData().map((host) => [host.host, host])));
+  const hostIds = createMemo(() => hostsData().map((host) => host.host));
+  const environmentsById = createMemo(() =>
+    new Map(environmentsData().map((env) => [`${env.host}::${env.name}`, env]))
+  );
+  const environmentIds = createMemo(() => environmentsData().map((env) => `${env.host}::${env.name}`));
+  const tasksById = createMemo(() => new Map(tasksData().map((task) => [task.id, task])));
   const [expanded, setExpanded] = createSignal<Record<string, boolean>>({});
   const [mode, setMode] = createSignal<RightMode>({ kind: "new-environment" });
   const [tab, setTab] = createSignal<RightTab>("conversation");
@@ -605,14 +612,18 @@ export default function Workspace() {
   });
 
   const tasksByEnvironment = createMemo(() => {
-    const grouped: Record<string, Task[]> = {};
+    const grouped: Record<string, string[]> = {};
     for (const task of tasksData()) {
       const key = `${task.host}::${task.environment}`;
       if (!grouped[key]) grouped[key] = [];
-      grouped[key].push(task);
+      grouped[key].push(task.id);
     }
     for (const key of Object.keys(grouped)) {
-      grouped[key].sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
+      grouped[key].sort((a, b) => {
+        const left = tasksById().get(a);
+        const right = tasksById().get(b);
+        return +new Date(right?.created_at ?? 0) - +new Date(left?.created_at ?? 0);
+      });
     }
     return grouped;
   });
@@ -636,15 +647,18 @@ export default function Workspace() {
               <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Loading hosts...</div>
             </Show>
             <div class="mt-2 space-y-1">
-              <For each={hostsData()}>
-                {(host) => (
+              <For each={hostIds()}>
+                {(hostId) => {
+                  const host = createMemo(() => hostsById().get(hostId));
+                  return (
                   <div class="rounded border border-gray-200 dark:border-gray-700 px-2 py-1 text-xs text-gray-700 dark:text-gray-300">
-                    <div class="font-medium">{host.host}</div>
-                    <Show when={host.host !== host.hostname}>
-                      <div class="text-[11px] text-gray-500 dark:text-gray-400">{host.hostname}</div>
+                    <div class="font-medium">{host()?.host}</div>
+                    <Show when={host() && host()!.host !== host()!.hostname}>
+                      <div class="text-[11px] text-gray-500 dark:text-gray-400">{host()?.hostname}</div>
                     </Show>
                   </div>
-                )}
+                  );
+                }}
               </For>
               <Show when={!hosts.loading && hostsData().length === 0}>
                 <div class="text-xs text-amber-600 dark:text-amber-400">No connected slopagents.</div>
@@ -669,69 +683,78 @@ export default function Workspace() {
             <div class="text-xs text-gray-500 dark:text-gray-400">Loading environments...</div>
           </Show>
 
-          <For each={environmentsData()}>
-            {(env) => (
+          <For each={environmentIds()}>
+            {(environmentId) => {
+              const env = createMemo(() => environmentsById().get(environmentId));
+              return (
               <div class="mb-2">
                 <div class="flex items-center justify-between px-2 py-2">
                   <button
-                    onClick={() => toggleEnvironment(`${env.host}::${env.name}`)}
+                    onClick={() => toggleEnvironment(environmentId)}
                     class="flex items-center gap-2 text-sm font-medium text-gray-800 dark:text-gray-200"
                   >
                     <span
                       class={`inline-block transition-transform ${
-                        expanded()[`${env.host}::${env.name}`] ? "rotate-90" : ""
+                        expanded()[environmentId] ? "rotate-90" : ""
                       }`}
                     >
                       ▸
                     </span>
-                    {env.host}/{env.name}
+                    {env()?.host}/{env()?.name}
                   </button>
                   <button
                     onClick={() => {
-                      setMode({ kind: "new-task", host: env.host, environment: env.name });
+                      if (!env()) return;
+                      setMode({ kind: "new-task", host: env()!.host, environment: env()!.name });
                       setTab("conversation");
                     }}
                     class="rounded-md border border-gray-300 dark:border-gray-600 px-2 py-0.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-800"
-                    title={`Create task in ${env.host}/${env.name}`}
+                    title={`Create task in ${env()?.host}/${env()?.name}`}
                   >
                     +
                   </button>
                 </div>
 
-                <Show when={expanded()[`${env.host}::${env.name}`]}>
+                <Show when={expanded()[environmentId]}>
                   <div class="pl-5 pr-1 py-1 space-y-1">
-                    <For each={tasksByEnvironment()[`${env.host}::${env.name}`] || []}>
-                      {(task) => (
+                    <For each={tasksByEnvironment()[environmentId] || []}>
+                      {(taskId) => {
+                        const task = createMemo(() => tasksById().get(taskId));
+                        return (
                         <button
                           onClick={() => {
-                            setMode({ kind: "task", taskId: task.id });
+                            setMode({ kind: "task", taskId });
                             setTab("conversation");
                           }}
                           class={`w-full rounded-md border px-2 py-2 text-left ${
-                            selectedTaskId() === task.id
+                            selectedTaskId() === taskId
                               ? "border-blue-500 bg-blue-50 dark:bg-blue-950/30"
                               : "border-transparent hover:border-gray-200 dark:hover:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
                           }`}
                         >
                           <div class="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                            {task.feature_branch}
+                            {task()?.feature_branch}
                           </div>
                           <div class="mt-1 flex items-center justify-between">
                             <span class="text-[11px] text-gray-500 dark:text-gray-400">
-                              {new Date(task.created_at).toLocaleDateString()}
+                              {new Date(task()?.created_at || "").toLocaleDateString()}
                             </span>
-                            <StatusBadge status={task.status} />
+                            <Show when={task()}>
+                              <StatusBadge status={task()!.status} />
+                            </Show>
                           </div>
                         </button>
-                      )}
+                        );
+                      }}
                     </For>
-                    <Show when={(tasksByEnvironment()[`${env.host}::${env.name}`] || []).length === 0}>
+                    <Show when={(tasksByEnvironment()[environmentId] || []).length === 0}>
                       <div class="text-xs text-gray-500 dark:text-gray-400 px-2 py-1">No tasks yet.</div>
                     </Show>
                   </div>
                 </Show>
               </div>
-            )}
+              );
+            }}
           </For>
         </aside>
 
