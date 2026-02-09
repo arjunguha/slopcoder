@@ -1,10 +1,11 @@
-.PHONY: help all build build-release build-frontend test test-core test-server test-frontend test-frontend-npm appimage clean
+.PHONY: help all build build-release build-slopagent-musl build-frontend test test-core test-server test-frontend test-frontend-npm appimage clean
 
 help:
 	@echo "Targets:"
 	@echo "  all             Build server (release) and frontend"
 	@echo "  build           Build server (debug)"
 	@echo "  build-release   Build server (release)"
+	@echo "  build-slopagent-musl  Build slopagent (release, x86_64-unknown-linux-musl)"
 	@echo "  build-frontend  Build frontend assets"
 	@echo "  test            Run all Rust tests"
 	@echo "  test-core       Run slopcoder-core tests"
@@ -21,6 +22,9 @@ build:
 
 build-release:
 	cargo build --release -p slopcoder-server
+
+build-slopagent-musl:
+	cargo build --release -p slopagent --target x86_64-unknown-linux-musl
 
 build-frontend:
 	cd frontend && npm install && npm run build

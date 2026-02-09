@@ -52,6 +52,7 @@ The system is intentionally designed for trusted/self-hosted operation rather th
   - Static frontend assets from `frontend/dist` (or overridden static dir).
 - Each `slopagent` uses file-based per-host configuration (`environments.yaml`).
 - Persistent task metadata remains file-based per environment (`tasks.yaml` and `task-<id>.jsonl`), written by the owning agent host.
+- CI and local build tooling produce a musl-linked `slopagent` binary via `cargo build --release -p slopagent --target x86_64-unknown-linux-musl`.
 
 ## 3. Core Domain Model
 
