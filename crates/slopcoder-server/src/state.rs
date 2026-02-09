@@ -103,7 +103,8 @@ pub struct AppState {
 }
 
 struct AppStateInner {
-    auth_password: Option<String>,
+    ui_auth_password: Option<String>,
+    agent_auth_password: String,
     agents_by_id: HashMap<Uuid, ConnectedAgent>,
     host_to_id: HashMap<String, Uuid>,
     task_hosts: HashMap<TaskId, String>,
@@ -111,10 +112,11 @@ struct AppStateInner {
 }
 
 impl AppState {
-    pub fn new(auth_password: Option<String>) -> Self {
+    pub fn new(ui_auth_password: Option<String>, agent_auth_password: String) -> Self {
         Self {
             inner: Arc::new(RwLock::new(AppStateInner {
-                auth_password,
+                ui_auth_password,
+                agent_auth_password,
                 agents_by_id: HashMap::new(),
                 host_to_id: HashMap::new(),
                 task_hosts: HashMap::new(),
@@ -123,8 +125,12 @@ impl AppState {
         }
     }
 
-    pub async fn get_auth_password(&self) -> Option<String> {
-        self.inner.read().await.auth_password.clone()
+    pub async fn get_ui_auth_password(&self) -> Option<String> {
+        self.inner.read().await.ui_auth_password.clone()
+    }
+
+    pub async fn get_agent_auth_password(&self) -> String {
+        self.inner.read().await.agent_auth_password.clone()
     }
 
     pub async fn register_agent(

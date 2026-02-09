@@ -4,6 +4,7 @@ mod state;
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use uuid::Uuid;
 use warp::Filter;
 
 use state::AppState;
@@ -20,9 +21,11 @@ async fn main() {
     let mut args = std::env::args().skip(1);
     let mut addr_arg: Option<String> = None;
     let mut static_dir_arg: Option<std::path::PathBuf> = None;
-    let mut password_prompt = false;
+    let mut ui_password_prompt = false;
+    let mut agent_password_prompt = false;
     let mut no_password = false;
-    let mut explicit_password: Option<String> = None;
+    let mut explicit_ui_password: Option<String> = None;
+    let mut explicit_agent_password: Option<String> = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -33,18 +36,24 @@ async fn main() {
                 static_dir_arg = args.next().map(std::path::PathBuf::from);
             }
             "--password-prompt" => {
-                password_prompt = true;
+                ui_password_prompt = true;
             }
             "--password" => {
-                explicit_password = args.next();
+                explicit_ui_password = args.next();
+            }
+            "--agent-password-prompt" => {
+                agent_password_prompt = true;
+            }
+            "--agent-password" => {
+                explicit_agent_password = args.next();
             }
             "--no-password" => {
                 no_password = true;
             }
             "-h" | "--help" => {
                 println!(
-                    "Usage: slopcoder-server [--addr HOST:PORT] [--static-dir PATH] [--password VALUE|--password-prompt|--no-password]\n\
-Defaults: addr=127.0.0.1:8080, static-dir=frontend/dist, authentication disabled"
+                    "Usage: slopcoder-server [--addr HOST:PORT] [--static-dir PATH] [--password VALUE|--password-prompt|--no-password] [--agent-password VALUE|--agent-password-prompt]\n\
+Defaults: addr=127.0.0.1:8080, static-dir=frontend/dist, UI auth disabled, agent auth enabled with generated startup password"
                 );
                 return;
             }
@@ -52,14 +61,14 @@ Defaults: addr=127.0.0.1:8080, static-dir=frontend/dist, authentication disabled
         }
     }
 
-    let auth_password = if no_password {
-        tracing::warn!("API and agent authentication disabled (--no-password).");
+    let ui_auth_password = if no_password {
+        tracing::warn!("UI authentication disabled (--no-password).");
         None
-    } else if let Some(password) = explicit_password {
-        println!("Slopcoder password: {}", password);
+    } else if let Some(password) = explicit_ui_password {
+        println!("UI password: {}", password);
         Some(password)
-    } else if password_prompt {
-        print!("Enter password: ");
+    } else if ui_password_prompt {
+        print!("Enter UI password: ");
         io::stdout().flush().expect("Failed to flush stdout");
         let mut input = String::new();
         io::stdin()
@@ -69,14 +78,34 @@ Defaults: addr=127.0.0.1:8080, static-dir=frontend/dist, authentication disabled
         if trimmed.is_empty() {
             None
         } else {
-            println!("Slopcoder password: {}", trimmed);
+            println!("UI password: {}", trimmed);
             Some(trimmed)
         }
     } else {
         None
     };
 
-    let state = AppState::new(auth_password);
+    let agent_auth_password = if let Some(password) = explicit_agent_password {
+        password
+    } else if agent_password_prompt {
+        print!("Enter slopagent connection password: ");
+        io::stdout().flush().expect("Failed to flush stdout");
+        let mut input = String::new();
+        io::stdin()
+            .read_line(&mut input)
+            .expect("Failed to read password");
+        let trimmed = input.trim_end_matches(&['\r', '\n'][..]).to_string();
+        if trimmed.is_empty() {
+            tracing::error!("Agent password cannot be empty");
+            std::process::exit(1);
+        }
+        trimmed
+    } else {
+        Uuid::new_v4().simple().to_string()[..16].to_string()
+    };
+    println!("Slopagent password: {}", agent_auth_password);
+
+    let state = AppState::new(ui_auth_password, agent_auth_password);
 
     // Build API routes
     let api_routes = routes::routes(state);

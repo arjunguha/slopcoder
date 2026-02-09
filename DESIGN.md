@@ -35,7 +35,7 @@ The system is intentionally designed for trusted/self-hosted operation rather th
 - Runs on each managed host (including localhost if desired).
 - Loads per-host `environments.yaml`.
 - Owns local task lifecycle, persistence, branch creation, merge/diff/output operations.
-- Connects outbound to coordinator `/agent/connect` and serves typed RPC requests.
+- Connects outbound to coordinator `/agent/connect` with a required agent-auth password and serves typed RPC requests.
 - Streams task events back to coordinator.
 
 3. Frontend (`frontend`)
@@ -175,10 +175,12 @@ State owns:
 - Connected agent registry (host label, hostname, connection metadata).
 - Task-to-host routing map for RPC forwarding.
 - Per-task broadcast channels for browser WebSocket streaming.
-- Optional auth password.
+- Optional UI auth password.
+- Required agent connection password.
 
 Startup behavior:
-- Configure optional/random password.
+- Configure optional UI password.
+- Configure required slopagent connection password (generated if not provided).
 - Start API/UI server and accept dynamic agent connections.
 
 ### 7.2 Routes
@@ -231,12 +233,13 @@ Merge endpoint:
 ### 7.5 Authentication
 
 Password mode:
-- By default, coordinator authentication is disabled.
-- Can be overridden with `--password`, prompted via `--password-prompt`, or disabled via `--no-password`.
+- Agent connection password is always required and checked on `/agent/connect`.
+- By default, coordinator UI/API authentication is disabled.
+- UI auth can be overridden with `--password`, prompted via `--password-prompt`, or disabled via `--no-password`.
 - Required value is checked against:
   - `X-Slopcoder-Password` header (REST), or
   - `password` query parameter (browser task websocket).
-- Agent websocket auth uses the same `X-Slopcoder-Password` header.
+- Agent websocket auth uses `X-Slopcoder-Password` and validates against the agent-connection secret.
 
 ## 8. Frontend Design
 

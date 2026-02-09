@@ -30,13 +30,13 @@ pub fn routes(
     let environments = warp::path("environments").and(environments_routes(state.clone()));
     let tasks = warp::path("tasks").and(tasks_routes(state.clone()));
 
-    let api_scoped = auth_filter(state.clone())
+    let api_scoped = auth_filter_api(state.clone())
         .and(hosts.or(environments).or(tasks))
         .recover(handle_rejection);
     let api_routes = warp::path("api").and(api_scoped);
 
     let agent_connect = warp::path!("agent" / "connect")
-        .and(auth_filter(state.clone()))
+        .and(auth_filter_agent(state.clone()))
         .and(warp::ws())
         .and(with_state(state))
         .map(|ws: warp::ws::Ws, state: AppState| {
@@ -842,7 +842,7 @@ fn with_state(state: AppState) -> impl Filter<Extract = (AppState,), Error = Inf
     warp::any().map(move || state.clone())
 }
 
-fn auth_filter(state: AppState) -> impl Filter<Extract = (), Error = warp::Rejection> + Clone {
+fn auth_filter_api(state: AppState) -> impl Filter<Extract = (), Error = warp::Rejection> + Clone {
     let raw_query = warp::query::raw()
         .or(warp::any().map(|| "".to_string()))
         .unify();
@@ -852,11 +852,27 @@ fn auth_filter(state: AppState) -> impl Filter<Extract = (), Error = warp::Rejec
         .and(warp::method())
         .and(warp::header::optional::<String>("x-slopcoder-password"))
         .and(raw_query)
-        .and_then(check_auth)
+        .and_then(check_api_auth)
         .untuple_one()
 }
 
-async fn check_auth(
+fn auth_filter_agent(
+    state: AppState,
+) -> impl Filter<Extract = (), Error = warp::Rejection> + Clone {
+    let raw_query = warp::query::raw()
+        .or(warp::any().map(|| "".to_string()))
+        .unify();
+
+    warp::any()
+        .and(with_state(state))
+        .and(warp::method())
+        .and(warp::header::optional::<String>("x-slopcoder-password"))
+        .and(raw_query)
+        .and_then(check_agent_auth)
+        .untuple_one()
+}
+
+async fn check_api_auth(
     state: AppState,
     method: Method,
     header_password: Option<String>,
@@ -865,13 +881,31 @@ async fn check_auth(
     if method == Method::OPTIONS {
         return Ok(());
     }
-    let required = state.get_auth_password().await;
+    let required = state.get_ui_auth_password().await;
     if let Some(required) = required {
         let query_password = extract_password_from_query(&raw_query);
         let provided = header_password.or(query_password);
         if provided.as_deref() != Some(required.as_str()) {
             return Err(warp::reject::custom(AuthError));
         }
+    }
+    Ok(())
+}
+
+async fn check_agent_auth(
+    state: AppState,
+    method: Method,
+    header_password: Option<String>,
+    raw_query: String,
+) -> Result<(), warp::Rejection> {
+    if method == Method::OPTIONS {
+        return Ok(());
+    }
+    let required = state.get_agent_auth_password().await;
+    let query_password = extract_password_from_query(&raw_query);
+    let provided = header_password.or(query_password);
+    if provided.as_deref() != Some(required.as_str()) {
+        return Err(warp::reject::custom(AuthError));
     }
     Ok(())
 }

@@ -60,8 +60,9 @@ Start the coordinator:
 slopcoder-server --addr 127.0.0.1:8080
 ```
 
-By default, `slopcoder-server` does not require authentication. To enable auth,
-start with `--password <value>` or `--password-prompt`.
+`slopcoder-server` uses two password scopes:
+- `slopagent` connection password: always required. By default it is generated at startup and printed as `Slopagent password: ...`. You can override with `--agent-password` or `--agent-password-prompt`.
+- Browser/UI password: optional. Enable with `--password` or `--password-prompt` (or keep disabled by default / force off with `--no-password`).
 
 Start an agent (local or remote):
 
@@ -69,8 +70,8 @@ Start an agent (local or remote):
 slopagent environments.yaml --server ws://127.0.0.1:8080
 ```
 
-`slopagent` will prompt for the password in the terminal unless `--password` or
-`--no-password` is supplied. You can override the host label shown in the UI:
+`slopagent` will prompt for the connection password in the terminal unless
+`--password` is supplied. You can override the host label shown in the UI:
 
 ```bash
 slopagent environments.yaml --server ws://127.0.0.1:8080 --name laptop-local

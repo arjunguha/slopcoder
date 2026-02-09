@@ -52,7 +52,6 @@ async fn main() {
     let mut branch_model = "claude-haiku-4-5".to_string();
     let mut provided_password: Option<String> = None;
     let mut host_override: Option<String> = None;
-    let mut no_password = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -64,10 +63,15 @@ async fn main() {
             }
             "--password" => provided_password = args.next(),
             "--name" | "--hostname" => host_override = args.next(),
-            "--no-password" => no_password = true,
+            "--no-password" => {
+                tracing::error!(
+                    "--no-password is no longer supported; slopagent password is required"
+                );
+                std::process::exit(1);
+            }
             "-h" | "--help" => {
                 println!(
-                    "Usage: slopagent [config.yaml] --server ws://HOST:PORT [--name HOSTNAME] [--password VALUE|--no-password] [--branch-model MODEL]\n\
+                    "Usage: slopagent [config.yaml] --server ws://HOST:PORT [--name HOSTNAME] [--password VALUE] [--branch-model MODEL]\n\
 Defaults: config=environments.yaml, branch-model=claude-haiku-4-5"
                 );
                 return;
@@ -94,13 +98,16 @@ Defaults: config=environments.yaml, branch-model=claude-haiku-4-5"
         }
     };
 
-    let password = if no_password {
-        None
-    } else if let Some(password) = provided_password {
+    let password = if let Some(password) = provided_password {
         Some(password)
     } else {
         prompt_password()
     };
+
+    if password.is_none() {
+        tracing::error!("slopagent password is required");
+        std::process::exit(1);
+    }
 
     let state = match AppState::new(config_path.clone(), branch_model).await {
         Ok(s) => s,
@@ -144,7 +151,7 @@ Defaults: config=environments.yaml, branch-model=claude-haiku-4-5"
 }
 
 fn prompt_password() -> Option<String> {
-    print!("Enter slopcoder password: ");
+    print!("Enter slopagent connection password: ");
     let _ = io::stdout().flush();
     let mut input = String::new();
     if io::stdin().read_line(&mut input).is_err() {
