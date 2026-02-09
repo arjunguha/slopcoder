@@ -2,3 +2,4 @@
 - Don't ever make any tests optional.
 - If you successfully implement a requested feature, commit it.
 - When updating GitHub Actions for a self-hosted runner, assume system dependencies and toolchains are installed.
+- As you make changes to the code, update the DESIGN.md file to reflect the changes. Do not let it get out of date.
