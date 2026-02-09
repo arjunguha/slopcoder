@@ -26,18 +26,19 @@ impl warp::reject::Reject for AuthError {}
 /// Create all API routes.
 pub fn routes(
     state: AppState,
-) -> impl Filter<Extract = (impl Reply,), Error = Infallible> + Clone {
-    let api = warp::path("api").and(auth_filter(state.clone()));
-
-    let environments = api.clone()
-        .and(warp::path("environments"))
+) -> impl Filter<Extract = (impl Reply,), Error = warp::Rejection> + Clone {
+    let environments = warp::path("environments")
         .and(environments_routes(state.clone()));
 
-    let tasks = api
-        .and(warp::path("tasks"))
+    let tasks = warp::path("tasks")
         .and(tasks_routes(state.clone()));
 
-    environments.or(tasks).recover(handle_rejection)
+    let api_scoped = auth_filter(state)
+        .and(environments.or(tasks))
+        .recover(handle_rejection);
+
+    warp::path("api")
+        .and(api_scoped)
 }
 
 // ============================================================================

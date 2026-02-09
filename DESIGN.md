@@ -197,6 +197,9 @@ Task routes:
 - `POST /api/tasks/{id}/merge`
 - `GET /api/tasks/{id}/stream` (WebSocket)
 
+Routing behavior:
+- API rejection recovery is scoped under `/api/*`, so non-API paths continue to static file and SPA fallback handlers instead of returning API JSON 404 payloads.
+
 ### 7.3 Task run orchestration
 
 `run_agent(...)` performs:
