@@ -4,7 +4,6 @@ mod state;
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-use uuid::Uuid;
 use warp::Filter;
 
 use state::AppState;
@@ -45,7 +44,7 @@ async fn main() {
             "-h" | "--help" => {
                 println!(
                     "Usage: slopcoder-server [--addr HOST:PORT] [--static-dir PATH] [--password VALUE|--password-prompt|--no-password]\n\
-Defaults: addr=127.0.0.1:8080, static-dir=frontend/dist, generated startup password enabled"
+Defaults: addr=127.0.0.1:8080, static-dir=frontend/dist, authentication disabled"
                 );
                 return;
             }
@@ -74,9 +73,7 @@ Defaults: addr=127.0.0.1:8080, static-dir=frontend/dist, generated startup passw
             Some(trimmed)
         }
     } else {
-        let random_password = Uuid::new_v4().simple().to_string()[..16].to_string();
-        println!("Slopcoder password: {}", random_password);
-        Some(random_password)
+        None
     };
 
     let state = AppState::new(auth_password);

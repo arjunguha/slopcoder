@@ -60,8 +60,8 @@ Start the coordinator:
 slopcoder-server --addr 127.0.0.1:8080
 ```
 
-By default, `slopcoder-server` generates a random password and prints it on
-startup. Use that password in the web UI prompt and for each `slopagent`.
+By default, `slopcoder-server` does not require authentication. To enable auth,
+start with `--password <value>` or `--password-prompt`.
 
 Start an agent (local or remote):
 
@@ -195,4 +195,3 @@ And these were the followups:
 11. So I just ran git worktree remove -f ../main in the MultiPL-E/bare
     directory from the CLI. But, when I reload the running server, the task
     still appears. In this situation, you should rebuild tasks.yaml
-

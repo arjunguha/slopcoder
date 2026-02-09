@@ -231,7 +231,7 @@ Merge endpoint:
 ### 7.5 Authentication
 
 Password mode:
-- By default, coordinator generates a random password and prints it at startup.
+- By default, coordinator authentication is disabled.
 - Can be overridden with `--password`, prompted via `--password-prompt`, or disabled via `--no-password`.
 - Required value is checked against:
   - `X-Slopcoder-Password` header (REST), or
