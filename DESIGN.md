@@ -248,8 +248,15 @@ Optional password mode:
 Implemented in `frontend/src/App.tsx`.
 
 Routes:
-- `/` and `/new`: combined New Task + Task List view.
-- `/tasks/:id`: task detail view.
+- `/`, `/new`, `/tasks/:id`: all render a unified single-page workspace shell.
+
+Workspace layout (implemented in `frontend/src/components/Workspace.tsx`):
+- Left pane: expandable environment tree with per-environment task list, collapse/expand chevrons, and `+` action per environment to launch a task-creation compose screen.
+- Special tree entry for environment creation (`+ New Environment`) that opens a dedicated "Let's Build" compose experience.
+- Right pane: context-driven content area that switches between:
+  - task conversation/diff tabs for selected tasks,
+  - new task compose screen for a selected environment,
+  - new environment compose screen.
 
 ### 8.2 API client
 
@@ -262,19 +269,21 @@ Implemented in `frontend/src/api/client.ts`.
 
 ### 8.3 New Task flow
 
-Implemented in `frontend/src/components/NewTaskForm.tsx`.
+Implemented in `frontend/src/components/Workspace.tsx` (`NewTaskPane`).
 
-- Select existing environment or create new one inline.
-- Base branch required for existing environments.
+- Triggered from per-environment `+` action in the left tree.
+- Base branch selectable from live branch list for that environment.
 - Feature branch optional (auto-generated server-side if omitted).
-- Agent selection exposed in UI: `codex`, `claude`, `cursor`, `gemini`.
-- On submit: creates task and navigates to task detail.
+- Agent selection exposed in UI: `codex`, `claude`, `cursor`, `gemini`, `opencode`.
+- Prompt field is auto-focused when entering create-task mode.
+- On submit: creates the task, then opens it in the right pane conversation tab.
 
 ### 8.4 Task list/detail
 
-- `TaskList.tsx`: card-based task overview with periodic refresh while any task is running.
-- `TaskDetail.tsx`: live stream + persisted output rendering, prompt continuation, status display, diff viewer, merge action, and richer formatting for tool call events.
-- `DiffViewer.tsx`: staged vs unstaged highlighting and compact unified-diff display.
+- `Workspace.tsx` owns environment/task fetching and periodic refresh, and renders task selection as a left tree instead of a separate list page.
+- `TaskPane` within `Workspace.tsx` handles live stream + persisted output rendering, prompt continuation, status display, and merge action.
+- Right-pane tab model splits task content into explicit `Conversation` and `Diff` tabs.
+- `DiffViewer.tsx` remains the diff renderer for staged/unstaged changes.
 
 ## 9. Evolution Highlights from Git History
 

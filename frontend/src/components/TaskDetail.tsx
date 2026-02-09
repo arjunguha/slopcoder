@@ -28,6 +28,7 @@ function StatusBadge(props: { status: Task["status"] }) {
     running: "bg-blue-500 animate-pulse",
     completed: "bg-green-500",
     failed: "bg-red-500",
+    interrupted: "bg-amber-500",
   };
 
   return (

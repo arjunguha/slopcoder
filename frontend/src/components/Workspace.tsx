@@ -1,0 +1,754 @@
+import {
+  Show,
+  For,
+  createMemo,
+  createResource,
+  createSignal,
+  createEffect,
+  onCleanup,
+} from "solid-js";
+import { useParams } from "@solidjs/router";
+import {
+  listEnvironments,
+  listTasks,
+  listBranches,
+  createEnvironment,
+  createTask,
+  getTask,
+  getTaskOutput,
+  sendPrompt,
+  subscribeToTask,
+  getTaskDiff,
+  mergeTask,
+} from "../api/client";
+import type { AgentEvent, AgentKind, CompletedItem, Task } from "../types";
+import { DiffViewer } from "./DiffViewer";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
+
+type RightMode =
+  | { kind: "new-environment" }
+  | { kind: "new-task"; environment: string }
+  | { kind: "task"; taskId: string };
+
+type RightTab = "conversation" | "diff";
+
+function StatusBadge(props: { status: Task["status"] }) {
+  const colors = {
+    pending: "bg-gray-500",
+    running: "bg-blue-500 animate-pulse",
+    completed: "bg-green-500",
+    failed: "bg-red-500",
+    interrupted: "bg-amber-500",
+  };
+
+  return (
+    <span
+      class={`inline-block px-2 py-1 text-xs font-medium text-white rounded ${colors[props.status]}`}
+    >
+      {props.status}
+    </span>
+  );
+}
+
+function EventRow(props: { event: AgentEvent }) {
+  const e = props.event;
+  if (e.type === "prompt.sent") {
+    return (
+      <div class="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/30 px-3 py-2">
+        <div class="text-xs uppercase tracking-wide text-blue-700 dark:text-blue-300">Prompt</div>
+        <div class="text-sm text-gray-900 dark:text-gray-100 whitespace-pre-wrap">{e.prompt}</div>
+      </div>
+    );
+  }
+
+  if (e.type === "turn.started") {
+    return <div class="text-xs text-blue-600 dark:text-blue-400">Turn started</div>;
+  }
+
+  if (e.type === "session.started") {
+    return <div class="text-xs text-gray-500 dark:text-gray-400">Session started</div>;
+  }
+
+  if (e.type === "turn.completed") {
+    return (
+      <div class="text-xs text-gray-500 dark:text-gray-400">
+        Turn completed
+        <Show when={e.usage}>
+          <span>
+            {" "}
+            ({e.usage?.input_tokens ?? 0} in / {e.usage?.output_tokens ?? 0} out)
+          </span>
+        </Show>
+      </div>
+    );
+  }
+
+  if (e.type === "background_event") {
+    return <div class="text-xs text-gray-500 dark:text-gray-400">Background: {e.event ?? "event"}</div>;
+  }
+
+  if (e.type === "item.completed") {
+    return <CompletedItemRow item={e.item} />;
+  }
+
+  return null;
+}
+
+function CompletedItemRow(props: { item: CompletedItem }) {
+  const item = props.item;
+
+  if (item.type === "agent_message") {
+    const html = createMemo(() => {
+      const raw = item.text || "";
+      const parsed = marked.parse(raw, { breaks: true });
+      return DOMPurify.sanitize(typeof parsed === "string" ? parsed : "");
+    });
+    return (
+      <div class="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2">
+        <div class="text-xs uppercase tracking-wide text-green-700 dark:text-green-300 mb-1">Agent</div>
+        <div class="markdown text-sm text-gray-900 dark:text-gray-100" innerHTML={html()} />
+      </div>
+    );
+  }
+
+  if (item.type === "reasoning") {
+    return (
+      <div class="text-sm text-gray-600 dark:text-gray-400 italic">
+        Thinking: {item.text}
+      </div>
+    );
+  }
+
+  if (item.type === "tool_call") {
+    return (
+      <div class="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2">
+        <div class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Tool call</div>
+        <div class="text-sm text-gray-900 dark:text-gray-100 font-mono">{item.name ?? "tool"}</div>
+        <Show when={item.arguments}>
+          <pre class="mt-1 text-xs whitespace-pre-wrap overflow-x-auto text-gray-600 dark:text-gray-300">
+            {item.arguments}
+          </pre>
+        </Show>
+      </div>
+    );
+  }
+
+  if (item.type === "tool_output") {
+    return (
+      <div class="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2">
+        <div class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Tool output</div>
+        <pre class="mt-1 text-xs whitespace-pre-wrap overflow-x-auto text-gray-700 dark:text-gray-200">
+          {item.output ?? ""}
+        </pre>
+      </div>
+    );
+  }
+
+  return (
+    <div class="text-xs text-gray-500 dark:text-gray-400">
+      Event: {item.type}
+    </div>
+  );
+}
+
+function TaskPane(props: { taskId: string; activeTab: () => RightTab }) {
+  const [task, { refetch: refetchTask }] = createResource(() => props.taskId, getTask);
+  const [persistedOutput, { refetch: refetchOutput }] = createResource(
+    () => props.taskId,
+    async (id) => (await getTaskOutput(id)).events
+  );
+  const [diff, { refetch: refetchDiff }] = createResource(() => props.taskId, getTaskDiff);
+
+  const [liveEvents, setLiveEvents] = createSignal<AgentEvent[]>([]);
+  const allEvents = createMemo(() => [...(persistedOutput() || []), ...liveEvents()]);
+  const [prompt, setPrompt] = createSignal("");
+  const [sending, setSending] = createSignal(false);
+  const [merging, setMerging] = createSignal(false);
+  const [error, setError] = createSignal("");
+  const [mergeMessage, setMergeMessage] = createSignal<{ type: "success" | "error"; text: string } | null>(null);
+
+  let outputRef: HTMLDivElement | undefined;
+  let promptRef: HTMLTextAreaElement | undefined;
+
+  createEffect(() => {
+    const t = task();
+    if (t?.status === "running") {
+      const unsubscribe = subscribeToTask(
+        t.id,
+        (event) => {
+          setLiveEvents((prev) => [...prev, event]);
+          setTimeout(() => {
+            if (outputRef) outputRef.scrollTop = outputRef.scrollHeight;
+          }, 10);
+        },
+        () => {
+          setTimeout(() => refetchTask(), 300);
+          setTimeout(() => refetchOutput(), 300);
+          setTimeout(() => refetchDiff(), 300);
+          setLiveEvents([]);
+        }
+      );
+      onCleanup(unsubscribe);
+    }
+  });
+
+  createEffect(() => {
+    const t = task();
+    if (t?.status === "running") {
+      const id = setInterval(() => refetchTask(), 3000);
+      onCleanup(() => clearInterval(id));
+    }
+  });
+
+  const sendFollowup = async (e: Event) => {
+    e.preventDefault();
+    if (!prompt().trim() || sending()) return;
+    const value = prompt();
+    setSending(true);
+    setError("");
+    setLiveEvents([{ type: "prompt.sent", prompt: value }]);
+    try {
+      await sendPrompt(props.taskId, { prompt: value });
+      setPrompt("");
+      refetchTask();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to send prompt");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div class="h-full flex flex-col min-h-0">
+      <Show when={task.loading}>
+        <div class="text-gray-500 dark:text-gray-400">Loading task...</div>
+      </Show>
+      <Show when={task.error}>
+        <div class="rounded-lg border border-red-300 dark:border-red-700 bg-red-100 dark:bg-red-900/50 p-3 text-red-700 dark:text-red-200">
+          {task.error?.message}
+        </div>
+      </Show>
+      <Show when={task()}>
+        <div class="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <div class="text-xl font-bold text-gray-900 dark:text-gray-100">{task()!.feature_branch}</div>
+            <div class="text-xs text-gray-500 dark:text-gray-400">
+              {task()!.environment} • base: {task()!.base_branch || "main"} • agent: {task()!.agent}
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <button
+              disabled={merging() || task()!.status === "running"}
+              onClick={async () => {
+                if (!confirm(`Merge ${task()!.feature_branch} into ${task()!.base_branch || "main"}?`)) return;
+                setMerging(true);
+                setMergeMessage(null);
+                try {
+                  const res = await mergeTask(task()!.id);
+                  setMergeMessage({ type: "success", text: res.message });
+                  refetchDiff();
+                } catch (err) {
+                  setMergeMessage({
+                    type: "error",
+                    text: err instanceof Error ? err.message : "Merge failed",
+                  });
+                } finally {
+                  setMerging(false);
+                }
+              }}
+              class="rounded-md bg-purple-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {merging() ? "Merging..." : "Merge"}
+            </button>
+            <StatusBadge status={task()!.status} />
+          </div>
+        </div>
+
+        <Show when={mergeMessage()}>
+          <div
+            class={`mb-3 rounded-lg border p-3 text-sm ${
+              mergeMessage()!.type === "success"
+                ? "border-green-300 dark:border-green-700 bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-200"
+                : "border-red-300 dark:border-red-700 bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-200"
+            }`}
+          >
+            {mergeMessage()!.text}
+          </div>
+        </Show>
+
+        <Show when={props.activeTab() === "conversation"}>
+          <div class="flex-1 min-h-0 flex flex-col">
+            <div
+              ref={outputRef}
+              class="flex-1 min-h-0 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-900 p-4 space-y-3"
+            >
+              <For each={allEvents()}>{(event) => <EventRow event={event} />}</For>
+              <Show when={task()!.status === "running" && allEvents().length === 0}>
+                <div class="text-gray-500 dark:text-gray-400 animate-pulse">Waiting for output...</div>
+              </Show>
+            </div>
+
+            <Show when={task()!.status !== "running"}>
+              <form onSubmit={sendFollowup} class="mt-3 flex gap-2">
+                <textarea
+                  ref={promptRef}
+                  rows={3}
+                  value={prompt()}
+                  onInput={(e) => setPrompt(e.currentTarget.value)}
+                  placeholder="Continue the conversation..."
+                  class="flex-1 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+                />
+                <button
+                  type="submit"
+                  disabled={!prompt().trim() || sending()}
+                  class="rounded-lg bg-blue-600 px-5 py-2 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {sending() ? "Sending..." : "Send"}
+                </button>
+              </form>
+              <Show when={error()}>
+                <div class="mt-2 text-sm text-red-600 dark:text-red-400">{error()}</div>
+              </Show>
+            </Show>
+          </div>
+        </Show>
+
+        <Show when={props.activeTab() === "diff"}>
+          <div class="flex-1 min-h-0">
+            <Show when={diff.loading}>
+              <div class="text-gray-500 dark:text-gray-400">Loading diff...</div>
+            </Show>
+            <Show when={diff.error}>
+              <div class="text-red-600 dark:text-red-400">{diff.error?.message}</div>
+            </Show>
+            <Show when={diff()}>
+              <DiffViewer staged={diff()!.staged} unstaged={diff()!.unstaged} />
+            </Show>
+          </div>
+        </Show>
+      </Show>
+    </div>
+  );
+}
+
+function NewEnvironmentPane(props: {
+  onCreated: (environmentName: string, firstTaskId?: string) => void;
+}) {
+  const [name, setName] = createSignal("");
+  const [prompt, setPrompt] = createSignal("");
+  const [agent, setAgent] = createSignal<AgentKind>("codex");
+  const [featureBranch, setFeatureBranch] = createSignal("");
+  const [loading, setLoading] = createSignal(false);
+  const [error, setError] = createSignal("");
+
+  let promptRef: HTMLTextAreaElement | undefined;
+  createEffect(() => {
+    setTimeout(() => promptRef?.focus(), 0);
+  });
+
+  const submit = async (e: Event) => {
+    e.preventDefault();
+    if (!name().trim()) return;
+    setLoading(true);
+    setError("");
+    try {
+      await createEnvironment({ name: name().trim() });
+      if (prompt().trim()) {
+        const task = await createTask({
+          environment: name().trim(),
+          prompt: prompt(),
+          agent: agent(),
+          feature_branch: featureBranch().trim() || undefined,
+        });
+        props.onCreated(name().trim(), task.id);
+      } else {
+        props.onCreated(name().trim());
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create environment");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} class="h-full flex flex-col min-h-0">
+      <div class="mb-4">
+        <h2 class="text-3xl font-extrabold tracking-tight text-gray-900 dark:text-gray-100">Let's Build</h2>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+          Start by creating a new environment.
+        </p>
+      </div>
+
+      <div class="grid gap-3 md:grid-cols-3 mb-4">
+        <input
+          value={name()}
+          onInput={(e) => setName(e.currentTarget.value)}
+          placeholder="Environment name"
+          class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+        />
+        <select
+          value={agent()}
+          onChange={(e) => setAgent(e.currentTarget.value as AgentKind)}
+          class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+        >
+          <option value="codex">Codex</option>
+          <option value="claude">Claude</option>
+          <option value="cursor">Cursor</option>
+          <option value="gemini">Gemini</option>
+          <option value="opencode">OpenCode</option>
+        </select>
+        <input
+          value={featureBranch()}
+          onInput={(e) => setFeatureBranch(e.currentTarget.value)}
+          placeholder="Feature branch (optional)"
+          class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+        />
+      </div>
+
+      <div class="flex-1 min-h-0 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4 text-gray-400 dark:text-gray-500 text-sm">
+        Conversation will appear here.
+      </div>
+
+      <div class="mt-4">
+        <textarea
+          ref={promptRef}
+          rows={4}
+          value={prompt()}
+          onInput={(e) => setPrompt(e.currentTarget.value)}
+          placeholder="Send the first prompt now (optional), or leave blank to just create the environment."
+          class="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+        />
+        <div class="mt-3 flex justify-end">
+          <button
+            type="submit"
+            disabled={loading() || !name().trim()}
+            class="rounded-lg bg-blue-600 px-5 py-2 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {loading() ? "Creating..." : "Create Environment"}
+          </button>
+        </div>
+        <Show when={error()}>
+          <div class="mt-2 text-sm text-red-600 dark:text-red-400">{error()}</div>
+        </Show>
+      </div>
+    </form>
+  );
+}
+
+function NewTaskPane(props: {
+  environment: string;
+  onCreated: (taskId: string) => void;
+}) {
+  const [branches] = createResource(() => props.environment, listBranches);
+  const [baseBranch, setBaseBranch] = createSignal("");
+  const [featureBranch, setFeatureBranch] = createSignal("");
+  const [agent, setAgent] = createSignal<AgentKind>("codex");
+  const [prompt, setPrompt] = createSignal("");
+  const [loading, setLoading] = createSignal(false);
+  const [error, setError] = createSignal("");
+
+  let promptRef: HTMLTextAreaElement | undefined;
+  createEffect(() => {
+    setTimeout(() => promptRef?.focus(), 0);
+  });
+
+  const submit = async (e: Event) => {
+    e.preventDefault();
+    if (!prompt().trim()) return;
+    setLoading(true);
+    setError("");
+    try {
+      const task = await createTask({
+        environment: props.environment,
+        prompt: prompt(),
+        base_branch: baseBranch().trim() || undefined,
+        feature_branch: featureBranch().trim() || undefined,
+        agent: agent(),
+      });
+      props.onCreated(task.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create task");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} class="h-full flex flex-col min-h-0">
+      <div class="mb-4">
+        <h2 class="text-3xl font-extrabold tracking-tight text-gray-900 dark:text-gray-100">Let's Build</h2>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+          Creating task in <span class="font-semibold">{props.environment}</span>
+        </p>
+      </div>
+
+      <div class="grid gap-3 md:grid-cols-3 mb-4">
+        <select
+          value={baseBranch()}
+          onChange={(e) => setBaseBranch(e.currentTarget.value)}
+          class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+        >
+          <option value="">Base branch (default: main)</option>
+          <For each={branches() || []}>{(branch) => <option value={branch}>{branch}</option>}</For>
+        </select>
+        <input
+          value={featureBranch()}
+          onInput={(e) => setFeatureBranch(e.currentTarget.value)}
+          placeholder="Feature branch (optional)"
+          class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+        />
+        <select
+          value={agent()}
+          onChange={(e) => setAgent(e.currentTarget.value as AgentKind)}
+          class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+        >
+          <option value="codex">Codex</option>
+          <option value="claude">Claude</option>
+          <option value="cursor">Cursor</option>
+          <option value="gemini">Gemini</option>
+          <option value="opencode">OpenCode</option>
+        </select>
+      </div>
+
+      <div class="flex-1 min-h-0 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4 text-gray-400 dark:text-gray-500 text-sm">
+        Conversation will appear here.
+      </div>
+
+      <div class="mt-4">
+        <textarea
+          ref={promptRef}
+          rows={4}
+          value={prompt()}
+          onInput={(e) => setPrompt(e.currentTarget.value)}
+          placeholder="Describe what you want built..."
+          class="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+        />
+        <div class="mt-3 flex justify-end">
+          <button
+            type="submit"
+            disabled={loading() || !prompt().trim()}
+            class="rounded-lg bg-blue-600 px-5 py-2 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {loading() ? "Creating..." : "Create Task"}
+          </button>
+        </div>
+        <Show when={error()}>
+          <div class="mt-2 text-sm text-red-600 dark:text-red-400">{error()}</div>
+        </Show>
+      </div>
+    </form>
+  );
+}
+
+export default function Workspace() {
+  const params = useParams();
+  const [environments, { refetch: refetchEnvironments }] = createResource(listEnvironments);
+  const [tasks, { refetch: refetchTasks }] = createResource(listTasks);
+  const [expanded, setExpanded] = createSignal<Record<string, boolean>>({});
+  const [mode, setMode] = createSignal<RightMode>({ kind: "new-environment" });
+  const [tab, setTab] = createSignal<RightTab>("conversation");
+
+  createEffect(() => {
+    const id = setInterval(() => refetchTasks(), 4000);
+    onCleanup(() => clearInterval(id));
+  });
+
+  createEffect(() => {
+    const id = params.id;
+    if (id) {
+      setMode({ kind: "task", taskId: id });
+      setTab("conversation");
+    }
+  });
+
+  const tasksByEnvironment = createMemo(() => {
+    const grouped: Record<string, Task[]> = {};
+    for (const task of tasks() || []) {
+      if (!grouped[task.environment]) grouped[task.environment] = [];
+      grouped[task.environment].push(task);
+    }
+    for (const key of Object.keys(grouped)) {
+      grouped[key].sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
+    }
+    return grouped;
+  });
+
+  const selectedTaskId = createMemo(() => {
+    const currentMode = mode();
+    return currentMode.kind === "task" ? currentMode.taskId : null;
+  });
+
+  const toggleEnvironment = (name: string) => {
+    setExpanded((prev) => ({ ...prev, [name]: !prev[name] }));
+  };
+
+  return (
+    <div class="h-screen bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
+      <div class="h-full grid grid-cols-[320px_1fr]">
+        <aside class="border-r border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 p-3 overflow-y-auto">
+          <div class="mb-3 flex items-center justify-between">
+            <h1 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Environments</h1>
+            <button
+              onClick={() => {
+                setMode({ kind: "new-environment" });
+                setTab("conversation");
+              }}
+              class="rounded-md bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700"
+            >
+              + New
+            </button>
+          </div>
+
+          <button
+            onClick={() => {
+              setMode({ kind: "new-environment" });
+              setTab("conversation");
+            }}
+            class={`mb-3 w-full rounded-lg border px-3 py-2 text-left text-sm ${
+              mode().kind === "new-environment"
+                ? "border-blue-500 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300"
+                : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-gray-100 dark:hover:bg-gray-800"
+            }`}
+          >
+            + New Environment
+          </button>
+
+          <Show when={environments.loading}>
+            <div class="text-xs text-gray-500 dark:text-gray-400">Loading environments...</div>
+          </Show>
+
+          <For each={environments() || []}>
+            {(env) => (
+              <div class="mb-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
+                <div class="flex items-center justify-between px-2 py-2">
+                  <button
+                    onClick={() => toggleEnvironment(env.name)}
+                    class="flex items-center gap-2 text-sm font-medium text-gray-800 dark:text-gray-200"
+                  >
+                    <span
+                      class={`inline-block transition-transform ${
+                        expanded()[env.name] ? "rotate-90" : ""
+                      }`}
+                    >
+                      ▸
+                    </span>
+                    {env.name}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setMode({ kind: "new-task", environment: env.name });
+                      setTab("conversation");
+                    }}
+                    class="rounded-md border border-gray-300 dark:border-gray-600 px-2 py-0.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-800"
+                    title={`Create task in ${env.name}`}
+                  >
+                    +
+                  </button>
+                </div>
+
+                <Show when={expanded()[env.name]}>
+                  <div class="border-t border-gray-200 dark:border-gray-700 p-2 space-y-1">
+                    <For each={tasksByEnvironment()[env.name] || []}>
+                      {(task) => (
+                        <button
+                          onClick={() => {
+                            setMode({ kind: "task", taskId: task.id });
+                            setTab("conversation");
+                          }}
+                          class={`w-full rounded-md border px-2 py-2 text-left ${
+                            selectedTaskId() === task.id
+                              ? "border-blue-500 bg-blue-50 dark:bg-blue-950/30"
+                              : "border-transparent hover:border-gray-200 dark:hover:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+                          }`}
+                        >
+                          <div class="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                            {task.feature_branch}
+                          </div>
+                          <div class="mt-1 flex items-center justify-between">
+                            <span class="text-[11px] text-gray-500 dark:text-gray-400">
+                              {new Date(task.created_at).toLocaleDateString()}
+                            </span>
+                            <StatusBadge status={task.status} />
+                          </div>
+                        </button>
+                      )}
+                    </For>
+                    <Show when={(tasksByEnvironment()[env.name] || []).length === 0}>
+                      <div class="text-xs text-gray-500 dark:text-gray-400 px-2 py-1">No tasks yet.</div>
+                    </Show>
+                  </div>
+                </Show>
+              </div>
+            )}
+          </For>
+        </aside>
+
+        <main class="p-5 min-h-0 flex flex-col">
+          <Show when={mode().kind === "task"}>
+            <div class="mb-4 flex gap-2 border-b border-gray-200 dark:border-gray-800">
+              <button
+                onClick={() => setTab("conversation")}
+                class={`px-3 py-2 text-sm font-medium ${
+                  tab() === "conversation"
+                    ? "text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400"
+                    : "text-gray-500 dark:text-gray-400"
+                }`}
+              >
+                Conversation
+              </button>
+              <button
+                onClick={() => setTab("diff")}
+                class={`px-3 py-2 text-sm font-medium ${
+                  tab() === "diff"
+                    ? "text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400"
+                    : "text-gray-500 dark:text-gray-400"
+                }`}
+              >
+                Diff
+              </button>
+            </div>
+          </Show>
+
+          <div class="flex-1 min-h-0">
+            <Show when={mode().kind === "new-environment"}>
+              <NewEnvironmentPane
+                onCreated={(environmentName, firstTaskId) => {
+                  refetchEnvironments();
+                  refetchTasks();
+                  setExpanded((prev) => ({ ...prev, [environmentName]: true }));
+                  if (firstTaskId) {
+                    setMode({ kind: "task", taskId: firstTaskId });
+                    setTab("conversation");
+                  } else {
+                    setMode({ kind: "new-task", environment: environmentName });
+                    setTab("conversation");
+                  }
+                }}
+              />
+            </Show>
+
+            <Show when={mode().kind === "new-task"}>
+              <NewTaskPane
+                environment={(mode() as { kind: "new-task"; environment: string }).environment}
+                onCreated={(taskId) => {
+                  refetchTasks();
+                  setMode({ kind: "task", taskId });
+                  setTab("conversation");
+                }}
+              />
+            </Show>
+
+            <Show when={mode().kind === "task"}>
+              <TaskPane
+                taskId={(mode() as { kind: "task"; taskId: string }).taskId}
+                activeTab={tab}
+              />
+            </Show>
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}

@@ -26,7 +26,7 @@ export interface Task {
   environment: string;
   base_branch?: string | null;
   feature_branch: string;
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "interrupted";
   session_id: string | null;
   created_at: string;
   worktree_date?: string | null;
