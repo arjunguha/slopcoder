@@ -285,6 +285,7 @@ Implemented in `frontend/src/components/Workspace.tsx` (`NewTaskPane`).
 - `TaskPane` within `Workspace.tsx` handles live stream + persisted output rendering, prompt continuation, status display, and merge action.
 - Right-pane tab model splits task content into explicit `Conversation` and `Diff` tabs.
 - `DiffViewer.tsx` remains the diff renderer for staged/unstaged changes.
+- Markdown rendering uses explicit light/dark CSS for fenced and inline code blocks to keep code text/background contrast correct under system dark mode.
 
 ## 9. Evolution Highlights from Git History
 

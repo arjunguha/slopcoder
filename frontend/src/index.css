@@ -37,20 +37,32 @@ body {
   padding: 0.75rem;
   border-radius: 0.5rem;
   overflow-x: auto;
+  border: 1px solid #e5e7eb;
 }
 
-.markdown code {
+.markdown :not(pre) > code {
   background: #e5e7eb;
+  color: #111827;
   padding: 0.1rem 0.25rem;
   border-radius: 0.25rem;
 }
 
-.dark .markdown pre {
-  background: #111827;
-  color: #e5e7eb;
+.markdown pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
 }
 
-.dark .markdown code {
-  background: #1f2937;
-  color: #e5e7eb;
+@media (prefers-color-scheme: dark) {
+  .markdown pre {
+    background: #111827;
+    color: #e5e7eb;
+    border-color: #374151;
+  }
+
+  .markdown :not(pre) > code {
+    background: #1f2937;
+    color: #e5e7eb;
+  }
 }
