@@ -251,12 +251,12 @@ Routes:
 - `/`, `/new`, `/tasks/:id`: all render a unified single-page workspace shell.
 
 Workspace layout (implemented in `frontend/src/components/Workspace.tsx`):
-- Left pane: expandable environment tree with per-environment task list, collapse/expand chevrons, and `+` action per environment to launch a task-creation compose screen.
-- Special tree entry for environment creation (`+ New Environment`) that opens a dedicated "Let's Build" compose experience.
-- Right pane: context-driven content area that switches between:
-  - task conversation/diff tabs for selected tasks,
-  - new task compose screen for a selected environment,
-  - new environment compose screen.
+- Left pane: minimal (unboxed) expandable environment tree with per-environment task list, collapse/expand chevrons, and `+` action per environment to launch a task-creation compose screen.
+ - Right pane: context-driven content area that switches between:
+   - task conversation/diff tabs for selected tasks,
+   - new task compose screen for a selected environment,
+   - new environment compose screen.
+ - A single top-level `+ New` action is used to enter new-environment flow.
 
 ### 8.2 API client
 
@@ -276,6 +276,7 @@ Implemented in `frontend/src/components/Workspace.tsx` (`NewTaskPane`).
 - Feature branch optional (auto-generated server-side if omitted).
 - Agent selection exposed in UI: `codex`, `claude`, `cursor`, `gemini`, `opencode`.
 - Prompt field is auto-focused when entering create-task mode.
+- Selector controls (agent/base/feature) are placed directly above the prompt compose box.
 - On submit: creates the task, then opens it in the right pane conversation tab.
 
 ### 8.4 Task list/detail

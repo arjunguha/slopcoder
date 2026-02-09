@@ -339,6 +339,7 @@ function NewEnvironmentPane(props: {
   const [prompt, setPrompt] = createSignal("");
   const [agent, setAgent] = createSignal<AgentKind>("codex");
   const [featureBranch, setFeatureBranch] = createSignal("");
+  const [baseBranch, setBaseBranch] = createSignal("main");
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal("");
 
@@ -359,6 +360,7 @@ function NewEnvironmentPane(props: {
           environment: name().trim(),
           prompt: prompt(),
           agent: agent(),
+          base_branch: baseBranch().trim() || undefined,
           feature_branch: featureBranch().trim() || undefined,
         });
         props.onCreated(name().trim(), task.id);
@@ -374,44 +376,44 @@ function NewEnvironmentPane(props: {
 
   return (
     <form onSubmit={submit} class="h-full flex flex-col min-h-0">
-      <div class="mb-4">
-        <h2 class="text-3xl font-extrabold tracking-tight text-gray-900 dark:text-gray-100">Let's Build</h2>
-        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-          Start by creating a new environment.
-        </p>
-      </div>
-
-      <div class="grid gap-3 md:grid-cols-3 mb-4">
-        <input
-          value={name()}
-          onInput={(e) => setName(e.currentTarget.value)}
-          placeholder="Environment name"
-          class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
-        />
-        <select
-          value={agent()}
-          onChange={(e) => setAgent(e.currentTarget.value as AgentKind)}
-          class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
-        >
-          <option value="codex">Codex</option>
-          <option value="claude">Claude</option>
-          <option value="cursor">Cursor</option>
-          <option value="gemini">Gemini</option>
-          <option value="opencode">OpenCode</option>
-        </select>
-        <input
-          value={featureBranch()}
-          onInput={(e) => setFeatureBranch(e.currentTarget.value)}
-          placeholder="Feature branch (optional)"
-          class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
-        />
-      </div>
-
-      <div class="flex-1 min-h-0 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4 text-gray-400 dark:text-gray-500 text-sm">
-        Conversation will appear here.
+      <div class="flex-1 min-h-0 flex items-center justify-center">
+        <div class="text-4xl font-extrabold tracking-tight text-gray-900 dark:text-gray-100 text-center">
+          Let's Build
+        </div>
       </div>
 
       <div class="mt-4">
+        <div class="grid gap-3 md:grid-cols-4 mb-3">
+          <input
+            value={name()}
+            onInput={(e) => setName(e.currentTarget.value)}
+            placeholder="Environment name"
+            class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+          />
+          <select
+            value={agent()}
+            onChange={(e) => setAgent(e.currentTarget.value as AgentKind)}
+            class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+          >
+            <option value="codex">Codex</option>
+            <option value="claude">Claude</option>
+            <option value="cursor">Cursor</option>
+            <option value="gemini">Gemini</option>
+            <option value="opencode">OpenCode</option>
+          </select>
+          <input
+            value={baseBranch()}
+            onInput={(e) => setBaseBranch(e.currentTarget.value)}
+            placeholder="Base branch"
+            class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+          />
+          <input
+            value={featureBranch()}
+            onInput={(e) => setFeatureBranch(e.currentTarget.value)}
+            placeholder="Feature branch (optional)"
+            class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+          />
+        </div>
         <textarea
           ref={promptRef}
           rows={4}
@@ -477,46 +479,45 @@ function NewTaskPane(props: {
 
   return (
     <form onSubmit={submit} class="h-full flex flex-col min-h-0">
-      <div class="mb-4">
-        <h2 class="text-3xl font-extrabold tracking-tight text-gray-900 dark:text-gray-100">Let's Build</h2>
-        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-          Creating task in <span class="font-semibold">{props.environment}</span>
-        </p>
-      </div>
-
-      <div class="grid gap-3 md:grid-cols-3 mb-4">
-        <select
-          value={baseBranch()}
-          onChange={(e) => setBaseBranch(e.currentTarget.value)}
-          class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
-        >
-          <option value="">Base branch (default: main)</option>
-          <For each={branches() || []}>{(branch) => <option value={branch}>{branch}</option>}</For>
-        </select>
-        <input
-          value={featureBranch()}
-          onInput={(e) => setFeatureBranch(e.currentTarget.value)}
-          placeholder="Feature branch (optional)"
-          class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
-        />
-        <select
-          value={agent()}
-          onChange={(e) => setAgent(e.currentTarget.value as AgentKind)}
-          class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
-        >
-          <option value="codex">Codex</option>
-          <option value="claude">Claude</option>
-          <option value="cursor">Cursor</option>
-          <option value="gemini">Gemini</option>
-          <option value="opencode">OpenCode</option>
-        </select>
-      </div>
-
-      <div class="flex-1 min-h-0 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4 text-gray-400 dark:text-gray-500 text-sm">
-        Conversation will appear here.
+      <div class="flex-1 min-h-0 flex items-center justify-center">
+        <div class="text-center">
+          <div class="text-4xl font-extrabold tracking-tight text-gray-900 dark:text-gray-100">
+            Let's Build
+          </div>
+          <div class="text-sm text-gray-500 dark:text-gray-400 mt-2">
+            {props.environment}
+          </div>
+        </div>
       </div>
 
       <div class="mt-4">
+        <div class="grid gap-3 md:grid-cols-3 mb-3">
+          <select
+            value={baseBranch()}
+            onChange={(e) => setBaseBranch(e.currentTarget.value)}
+            class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+          >
+            <option value="">Base branch (default: main)</option>
+            <For each={branches() || []}>{(branch) => <option value={branch}>{branch}</option>}</For>
+          </select>
+          <input
+            value={featureBranch()}
+            onInput={(e) => setFeatureBranch(e.currentTarget.value)}
+            placeholder="Feature branch (optional)"
+            class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+          />
+          <select
+            value={agent()}
+            onChange={(e) => setAgent(e.currentTarget.value as AgentKind)}
+            class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+          >
+            <option value="codex">Codex</option>
+            <option value="claude">Claude</option>
+            <option value="cursor">Cursor</option>
+            <option value="gemini">Gemini</option>
+            <option value="opencode">OpenCode</option>
+          </select>
+        </div>
         <textarea
           ref={promptRef}
           rows={4}
@@ -601,27 +602,13 @@ export default function Workspace() {
             </button>
           </div>
 
-          <button
-            onClick={() => {
-              setMode({ kind: "new-environment" });
-              setTab("conversation");
-            }}
-            class={`mb-3 w-full rounded-lg border px-3 py-2 text-left text-sm ${
-              mode().kind === "new-environment"
-                ? "border-blue-500 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300"
-                : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-gray-100 dark:hover:bg-gray-800"
-            }`}
-          >
-            + New Environment
-          </button>
-
           <Show when={environments.loading}>
             <div class="text-xs text-gray-500 dark:text-gray-400">Loading environments...</div>
           </Show>
 
           <For each={environments() || []}>
             {(env) => (
-              <div class="mb-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
+              <div class="mb-2">
                 <div class="flex items-center justify-between px-2 py-2">
                   <button
                     onClick={() => toggleEnvironment(env.name)}
@@ -649,7 +636,7 @@ export default function Workspace() {
                 </div>
 
                 <Show when={expanded()[env.name]}>
-                  <div class="border-t border-gray-200 dark:border-gray-700 p-2 space-y-1">
+                  <div class="pl-5 pr-1 py-1 space-y-1">
                     <For each={tasksByEnvironment()[env.name] || []}>
                       {(task) => (
                         <button
