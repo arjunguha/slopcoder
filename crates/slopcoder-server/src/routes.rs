@@ -23,7 +23,9 @@ struct AuthError;
 impl warp::reject::Reject for AuthError {}
 
 /// Create all API routes.
-pub fn routes(state: AppState) -> impl Filter<Extract = (impl Reply,), Error = Infallible> + Clone {
+pub fn routes(
+    state: AppState,
+) -> impl Filter<Extract = (impl Reply,), Error = warp::Rejection> + Clone {
     let hosts = warp::path("hosts").and(hosts_routes(state.clone()));
     let environments = warp::path("environments").and(environments_routes(state.clone()));
     let tasks = warp::path("tasks").and(tasks_routes(state.clone()));
@@ -39,8 +41,7 @@ pub fn routes(state: AppState) -> impl Filter<Extract = (impl Reply,), Error = I
         .and(with_state(state))
         .map(|ws: warp::ws::Ws, state: AppState| {
             ws.on_upgrade(move |socket| handle_agent_socket(socket, state))
-        })
-        .recover(handle_rejection);
+        });
 
     api_routes.or(agent_connect)
 }
