@@ -130,10 +130,12 @@ async fn create_environment(
                 slopcoder_core::environment::EnvironmentError::AlreadyExists(_) => StatusCode::CONFLICT,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
+            let error = e.to_string();
+            if status == StatusCode::INTERNAL_SERVER_ERROR {
+                tracing::error!("Failed to create environment '{}': {}", name, error);
+            }
             Ok(warp::reply::with_status(
-                warp::reply::json(&ErrorResponse {
-                    error: e.to_string(),
-                }),
+                warp::reply::json(&ErrorResponse { error }),
                 status,
             ))
         }
@@ -148,6 +150,18 @@ struct BranchesResponse {
 #[derive(Serialize)]
 struct ErrorResponse {
     error: String,
+}
+
+fn internal_server_error(
+    context: &str,
+    error: impl Into<String>,
+) -> warp::reply::WithStatus<warp::reply::Json> {
+    let error = error.into();
+    tracing::error!("{}: {}", context, error);
+    warp::reply::with_status(
+        warp::reply::json(&ErrorResponse { error }),
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
 }
 
 async fn list_branches(name: String, state: AppState) -> Result<impl Reply, Infallible> {
@@ -179,11 +193,9 @@ async fn list_branches(name: String, state: AppState) -> Result<impl Reply, Infa
             warp::reply::json(&BranchesResponse { branches }),
             StatusCode::OK,
         )),
-        Err(e) => Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: e.to_string(),
-            }),
-            StatusCode::INTERNAL_SERVER_ERROR,
+        Err(e) => Ok(internal_server_error(
+            &format!("Failed to list branches for environment '{}'", name),
+            e.to_string(),
         )),
     }
 }
@@ -416,10 +428,18 @@ async fn create_task(
                 }
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
+            let error = format!("Failed to create worktree: {}", e);
+            if status == StatusCode::INTERNAL_SERVER_ERROR {
+                tracing::error!(
+                    "Failed to create task worktree for env='{}' base='{}' feature='{}': {}",
+                    req.environment,
+                    base_branch,
+                    feature_branch,
+                    error
+                );
+            }
             return Ok(warp::reply::with_status(
-                warp::reply::json(&ErrorResponse {
-                    error: format!("Failed to create worktree: {}", e),
-                }),
+                warp::reply::json(&ErrorResponse { error }),
                 status,
             ));
         }
@@ -441,11 +461,9 @@ async fn create_task(
     };
 
     if let Err(e) = state.insert_task(task).await {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: format!("Failed to save task: {}", e),
-            }),
-            StatusCode::INTERNAL_SERVER_ERROR,
+        return Ok(internal_server_error(
+            "Failed to save task",
+            format!("Failed to save task: {}", e),
         ));
     }
 
@@ -576,11 +594,9 @@ async fn get_task_output(id: String, state: AppState) -> Result<impl Reply, Infa
     let events = match read_output_events(&output_path).await {
         Ok(events) => events,
         Err(e) => {
-            return Ok(warp::reply::with_status(
-                warp::reply::json(&ErrorResponse {
-                    error: format!("Failed to read output: {}", e),
-                }),
-                StatusCode::INTERNAL_SERVER_ERROR,
+            return Ok(internal_server_error(
+                "Failed to read task output events",
+                format!("Failed to read output: {}", e),
             ));
         }
     };
@@ -659,11 +675,9 @@ async fn get_task_diff(id: String, state: AppState) -> Result<impl Reply, Infall
             }),
             StatusCode::OK,
         )),
-        Err(e) => Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: format!("Failed to get diff: {}", e),
-            }),
-            StatusCode::INTERNAL_SERVER_ERROR,
+        Err(e) => Ok(internal_server_error(
+            "Failed to compute task diff",
+            format!("Failed to get diff: {}", e),
         )),
     }
 }
@@ -705,11 +719,9 @@ async fn merge_task(id: String, state: AppState) -> Result<impl Reply, Infallibl
 
     // 2. Get environment and target worktree
     let Some(_env_dir) = state.get_environment_directory(&task.environment).await else {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Environment not found".to_string(),
-            }),
-            StatusCode::INTERNAL_SERVER_ERROR,
+        return Ok(internal_server_error(
+            "Task environment directory missing",
+            "Environment not found",
         ));
     };
 
@@ -717,11 +729,9 @@ async fn merge_task(id: String, state: AppState) -> Result<impl Reply, Infallibl
     // Since state.get_config() returns a full config, we can find the env there.
     let config = state.get_config().await;
     let Some(env) = config.find(&task.environment) else {
-        return Ok(warp::reply::with_status(
-            warp::reply::json(&ErrorResponse {
-                error: "Environment not found in config".to_string(),
-            }),
-            StatusCode::INTERNAL_SERVER_ERROR,
+        return Ok(internal_server_error(
+            "Task environment missing from config",
+            "Environment not found in config",
         ));
     };
 
@@ -742,11 +752,9 @@ async fn merge_task(id: String, state: AppState) -> Result<impl Reply, Infallibl
     } else {
         // Create it
         if let Err(e) = env.create_worktree(base_branch).await {
-            return Ok(warp::reply::with_status(
-                warp::reply::json(&ErrorResponse {
-                    error: format!("Failed to create worktree for '{}': {}", base_branch, e),
-                }),
-                StatusCode::INTERNAL_SERVER_ERROR,
+            return Ok(internal_server_error(
+                "Failed to prepare target base worktree for merge",
+                format!("Failed to create worktree for '{}': {}", base_branch, e),
             ));
         }
     }
@@ -798,6 +806,11 @@ async fn merge_task(id: String, state: AppState) -> Result<impl Reply, Infallibl
             }
         }
         Err(e) => {
+             tracing::error!(
+                "Failed to execute git merge for task {}: {}",
+                task_id,
+                e
+            );
              Ok(warp::reply::with_status(
                 warp::reply::json(&ErrorResponse {
                     error: format!("Failed to execute git merge: {}", e),
@@ -1134,11 +1147,10 @@ async fn handle_rejection(err: warp::Rejection) -> Result<impl Reply, Infallible
         ));
     }
 
-    Ok(warp::reply::with_status(
-        warp::reply::json(&ErrorResponse {
-            error: "Internal Server Error".to_string(),
-        }),
-        StatusCode::INTERNAL_SERVER_ERROR,
+    tracing::error!("Unhandled API rejection: {:?}", err);
+    Ok(internal_server_error(
+        "Unhandled API rejection",
+        "Internal Server Error",
     ))
 }
 

@@ -199,6 +199,7 @@ Task routes:
 
 Routing behavior:
 - API rejection recovery is scoped under `/api/*`, so non-API paths continue to static file and SPA fallback handlers instead of returning API JSON 404 payloads.
+- `500` API responses are logged with contextual server-side error messages, and unknown Warp rejections are logged before returning a generic JSON internal error to clients.
 
 ### 7.3 Task run orchestration
 
