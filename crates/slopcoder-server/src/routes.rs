@@ -14,6 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 use warp::{http::{Method, StatusCode}, Filter, Reply};
+use warp::reject::InvalidQuery;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
@@ -1081,11 +1082,15 @@ fn with_state(
 }
 
 fn auth_filter(state: AppState) -> impl Filter<Extract = (), Error = warp::Rejection> + Clone {
+    let raw_query = warp::query::raw()
+        .or(warp::any().map(|| "".to_string()))
+        .unify();
+
     warp::any()
         .and(with_state(state))
         .and(warp::method())
         .and(warp::header::optional::<String>("x-slopcoder-password"))
-        .and(warp::query::raw())
+        .and(raw_query)
         .and_then(check_auth)
         .untuple_one()
 }
@@ -1147,10 +1152,22 @@ async fn handle_rejection(err: warp::Rejection) -> Result<impl Reply, Infallible
         ));
     }
 
+    if err.find::<InvalidQuery>().is_some() {
+        tracing::warn!("Invalid query received: {:?}", err);
+        return Ok(warp::reply::with_status(
+            warp::reply::json(&ErrorResponse {
+                error: "Invalid query".to_string(),
+            }),
+            StatusCode::BAD_REQUEST,
+        ));
+    }
+
     tracing::error!("Unhandled API rejection: {:?}", err);
-    Ok(internal_server_error(
-        "Unhandled API rejection",
-        "Internal Server Error",
+    Ok(warp::reply::with_status(
+        warp::reply::json(&ErrorResponse {
+            error: "Internal Server Error".to_string(),
+        }),
+        StatusCode::INTERNAL_SERVER_ERROR,
     ))
 }
 

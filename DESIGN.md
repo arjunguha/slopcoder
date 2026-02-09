@@ -177,6 +177,9 @@ Startup behavior:
 - Register environments into persistence layer.
 - Load/repair tasks from disk.
 
+Startup validation constraint:
+- Server startup fails fast if `new_environments_directory` is missing or not a directory, even when no password authentication is enabled.
+
 ### 7.2 Routes
 
 Implemented in `crates/slopcoder-server/src/routes.rs`.
@@ -200,6 +203,7 @@ Task routes:
 Routing behavior:
 - API rejection recovery is scoped under `/api/*`, so non-API paths continue to static file and SPA fallback handlers instead of returning API JSON 404 payloads.
 - `500` API responses are logged with contextual server-side error messages, and unknown Warp rejections are logged before returning a generic JSON internal error to clients.
+- Auth query parsing treats missing query strings as empty input (instead of rejecting requests), preventing spurious `InvalidQuery` rejections on normal API calls without URL query parameters.
 
 ### 7.3 Task run orchestration
 
