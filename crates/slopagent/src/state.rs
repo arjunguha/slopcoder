@@ -1,13 +1,15 @@
 use slopcoder_core::{
     anyagent::AnyAgentConfig,
-    environment::{EnvironmentConfig, EnvironmentError},
+    environment::{Environment, EnvironmentConfig, EnvironmentError},
     persistence::PersistentTaskStore,
     task::{Task, TaskId},
     PersistenceError,
 };
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
+use tokio::process::Command;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -44,6 +46,24 @@ pub enum StartupError {
     },
 }
 
+#[derive(Debug, Error)]
+pub enum CreateEnvironmentError {
+    #[error("Environment name is required")]
+    NameRequired,
+
+    #[error("Environment name cannot contain path separators")]
+    InvalidName,
+
+    #[error("Environment already exists: {0}")]
+    AlreadyExists(PathBuf),
+
+    #[error("Failed to create environment directory: {0}")]
+    CreateDirectory(std::io::Error),
+
+    #[error("Failed to initialize git repository: {0}")]
+    GitInit(String),
+}
+
 #[derive(Clone)]
 pub struct AppState {
     inner: Arc<RwLock<AppStateInner>>,
@@ -51,6 +71,7 @@ pub struct AppState {
 
 struct AppStateInner {
     config: EnvironmentConfig,
+    state_root: PathBuf,
     tasks: PersistentTaskStore,
     interrupt_channels: std::collections::HashMap<TaskId, tokio::sync::oneshot::Sender<()>>,
     agent_config: AnyAgentConfig,
@@ -87,7 +108,8 @@ impl AppState {
         let mut tasks = PersistentTaskStore::new();
         let state_root = config.worktrees_directory.join(".slopcoder-state");
         tokio::fs::create_dir_all(&state_root).await?;
-        for env in &config.environments {
+        let discovered = discover_environments_under(&config.environments_root).await;
+        for env in config.environments.iter().chain(discovered.iter()) {
             let env_state_dir = state_root.join(sanitize_for_path(&env.name));
             tokio::fs::create_dir_all(&env_state_dir).await?;
             tasks.register_environment(env.name.clone(), env_state_dir);
@@ -97,6 +119,7 @@ impl AppState {
         Ok(Self {
             inner: Arc::new(RwLock::new(AppStateInner {
                 config,
+                state_root,
                 tasks,
                 interrupt_channels: std::collections::HashMap::new(),
                 agent_config: AnyAgentConfig::default(),
@@ -105,8 +128,110 @@ impl AppState {
         })
     }
 
-    pub async fn get_config(&self) -> EnvironmentConfig {
-        self.inner.read().await.config.clone()
+    pub async fn list_environments(&self) -> Vec<Environment> {
+        let config = self.inner.read().await.config.clone();
+        let mut by_name = std::collections::BTreeMap::new();
+        for env in config.environments {
+            by_name.insert(env.name.clone(), env);
+        }
+        for env in discover_environments_under(&config.environments_root).await {
+            by_name.insert(env.name.clone(), env);
+        }
+        by_name.into_values().collect()
+    }
+
+    pub async fn find_environment(&self, name: &str) -> Option<Environment> {
+        self.list_environments()
+            .await
+            .into_iter()
+            .find(|env| env.name == name)
+    }
+
+    pub async fn create_environment(
+        &self,
+        raw_name: &str,
+    ) -> Result<Environment, CreateEnvironmentError> {
+        let name = raw_name.trim();
+        if name.is_empty() {
+            return Err(CreateEnvironmentError::NameRequired);
+        }
+        if name.contains('/') || name.contains('\\') || name == "." || name == ".." {
+            return Err(CreateEnvironmentError::InvalidName);
+        }
+
+        let root = self.inner.read().await.config.environments_root.clone();
+        tokio::fs::create_dir_all(&root)
+            .await
+            .map_err(CreateEnvironmentError::CreateDirectory)?;
+
+        let directory = root.join(name);
+        if directory.exists() {
+            return Err(CreateEnvironmentError::AlreadyExists(directory));
+        }
+        tokio::fs::create_dir_all(&directory)
+            .await
+            .map_err(CreateEnvironmentError::CreateDirectory)?;
+
+        let init_output = Command::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(&directory)
+            .output()
+            .await
+            .map_err(|e| CreateEnvironmentError::GitInit(e.to_string()))?;
+        if !init_output.status.success() {
+            let fallback_output = Command::new("git")
+                .args(["init"])
+                .current_dir(&directory)
+                .output()
+                .await
+                .map_err(|e| CreateEnvironmentError::GitInit(e.to_string()))?;
+            if !fallback_output.status.success() {
+                let stderr = String::from_utf8_lossy(&fallback_output.stderr).to_string();
+                return Err(CreateEnvironmentError::GitInit(stderr));
+            }
+        }
+
+        let commit_output = Command::new("git")
+            .args([
+                "-c",
+                "user.name=slopcoder",
+                "-c",
+                "user.email=slopcoder@local",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Initialize repository",
+            ])
+            .current_dir(&directory)
+            .output()
+            .await
+            .map_err(|e| CreateEnvironmentError::GitInit(e.to_string()))?;
+        if !commit_output.status.success() {
+            let stderr = String::from_utf8_lossy(&commit_output.stderr).to_string();
+            return Err(CreateEnvironmentError::GitInit(stderr));
+        }
+
+        let env = Environment {
+            name: directory.to_string_lossy().to_string(),
+            directory,
+        };
+        self.ensure_environment_registered(&env.name)
+            .await
+            .map_err(|e| CreateEnvironmentError::GitInit(e.to_string()))?;
+        Ok(env)
+    }
+
+    pub async fn ensure_environment_registered(&self, env_name: &str) -> Result<(), StateError> {
+        let mut inner = self.inner.write().await;
+        if inner.tasks.has_environment(env_name) {
+            return Ok(());
+        }
+
+        let env_state_dir = inner.state_root.join(sanitize_for_path(env_name));
+        inner
+            .tasks
+            .register_environment(env_name.to_string(), env_state_dir);
+        Ok(())
     }
 
     pub async fn get_environment_directory(&self, name: &str) -> Option<PathBuf> {
@@ -156,6 +281,8 @@ impl AppState {
     }
 
     pub async fn insert_task(&self, task: Task) -> Result<(), StateError> {
+        self.ensure_environment_registered(&task.environment)
+            .await?;
         self.inner.write().await.tasks.insert(task).await?;
         Ok(())
     }
@@ -236,6 +363,71 @@ impl AppState {
             false
         }
     }
+}
+
+async fn discover_environments_under(root: &Path) -> Vec<Environment> {
+    let mut paths = Vec::new();
+    let mut seen = HashSet::new();
+
+    for candidate in candidate_paths(root).await {
+        if seen.insert(candidate.clone()) && is_checked_out_repo(&candidate).await {
+            paths.push(candidate);
+        }
+    }
+
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|directory| Environment {
+            name: directory.to_string_lossy().to_string(),
+            directory,
+        })
+        .collect()
+}
+
+async fn candidate_paths(root: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if !root.is_dir() {
+        return candidates;
+    }
+
+    candidates.push(root.to_path_buf());
+    let mut entries = match tokio::fs::read_dir(root).await {
+        Ok(entries) => entries,
+        Err(_) => return candidates,
+    };
+
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        candidates.push(path.clone());
+        candidates.push(path.join("main"));
+        candidates.push(path.join("master"));
+    }
+
+    candidates
+}
+
+async fn is_checked_out_repo(path: &Path) -> bool {
+    if !path.is_dir() {
+        return false;
+    }
+    let output = match Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(path)
+        .output()
+        .await
+    {
+        Ok(output) => output,
+        Err(_) => return false,
+    };
+
+    if !output.status.success() {
+        return false;
+    }
+    String::from_utf8_lossy(&output.stdout).trim() == "true"
 }
 
 fn sanitize_for_path(value: &str) -> String {

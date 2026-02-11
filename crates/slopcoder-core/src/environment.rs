@@ -56,6 +56,8 @@ pub enum EnvironmentError {
 #[serde(deny_unknown_fields)]
 struct EnvironmentConfigFile {
     pub worktrees_directory: PathBuf,
+    #[serde(default)]
+    pub environments_root: Option<PathBuf>,
     pub environments: Vec<PathBuf>,
 }
 
@@ -64,6 +66,8 @@ struct EnvironmentConfigFile {
 pub struct EnvironmentConfig {
     /// Directory where isolated task worktrees are created.
     pub worktrees_directory: PathBuf,
+    /// Root directory scanned for additional checked-out repositories.
+    pub environments_root: PathBuf,
     /// Configured repository environments.
     pub environments: Vec<Environment>,
 }
@@ -80,6 +84,9 @@ impl EnvironmentConfig {
         let file: EnvironmentConfigFile = serde_yaml::from_str(yaml)?;
         Ok(Self {
             worktrees_directory: file.worktrees_directory,
+            environments_root: file
+                .environments_root
+                .unwrap_or_else(default_environments_root),
             environments: file
                 .environments
                 .into_iter()
@@ -109,6 +116,7 @@ impl EnvironmentConfig {
     pub async fn save(&self, path: impl AsRef<Path>) -> Result<(), EnvironmentError> {
         let file = EnvironmentConfigFile {
             worktrees_directory: self.worktrees_directory.clone(),
+            environments_root: Some(self.environments_root.clone()),
             environments: self
                 .environments
                 .iter()
@@ -119,6 +127,13 @@ impl EnvironmentConfig {
         tokio::fs::write(path, content).await?;
         Ok(())
     }
+}
+
+fn default_environments_root() -> PathBuf {
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("slop")
 }
 
 /// An environment definition.
@@ -349,6 +364,7 @@ mod tests {
 
     const SAMPLE_CONFIG: &str = r#"
 worktrees_directory: "/tmp/slopcoder-worktrees"
+environments_root: "/tmp/slop"
 environments:
   - "/tmp/test-project"
   - "/home/user/projects/another"
@@ -358,6 +374,7 @@ environments:
     fn test_parse_config() {
         let config = EnvironmentConfig::from_yaml(SAMPLE_CONFIG).unwrap();
         assert_eq!(config.environments.len(), 2);
+        assert_eq!(config.environments_root, PathBuf::from("/tmp/slop"));
         assert_eq!(
             config.environments[0].name,
             PathBuf::from("/tmp/test-project").to_string_lossy()

@@ -34,10 +34,17 @@ Create `environments.yaml` on each host where a `slopagent` runs:
 
 ```yaml
 worktrees_directory: "/path/to/worktrees"
+environments_root: "/path/to/env-root" # optional, defaults to ~/slop
 environments:
   - "/scratch/arjun-nosudo/repos/nuprl/MultiPL-E"
   - "/path/to/another/checked-out/repo"
 ```
+
+In the UI, "Create Environment" creates a new repository at
+`<environments_root>/<name>` on the selected host and refreshes the list
+immediately. `slopagent` also auto-discovers repositories under
+`environments_root` (direct child repos and `<child>/main` or `<child>/master`)
+without modifying `environments.yaml`.
 
 Start the coordinator:
 

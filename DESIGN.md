@@ -20,6 +20,7 @@ An environment is now a **checked-out Git repository directory** (not a bare rep
 
 ```yaml
 worktrees_directory: "/path/to/isolated/worktrees"
+environments_root: "/path/to/env-root" # optional, defaults to ~/slop
 environments:
   - "/path/to/repo-a"
   - "/path/to/repo-b"
@@ -28,6 +29,8 @@ environments:
 Semantics:
 - `environments` is a list of repository directories.
 - `worktrees_directory` is the parent directory used for isolated task worktrees.
+- `environments_root` is scanned at runtime for additional repositories:
+  direct children that are repositories, plus `<child>/main` and `<child>/master`.
 - Environment IDs are the directory paths.
 
 Validation:
@@ -128,8 +131,10 @@ Task response payload now includes:
 - `base_branch` (optional)
 - `merge_branch` (optional)
 
-Environment creation via API is disabled in the agent:
-- Environments are declared in `environments.yaml`.
+Environment creation via API:
+- UI provides host + environment name only.
+- Agent creates `<environments_root>/<name>`, initializes a Git repository, and makes an empty initial commit.
+- Created/discovered environments are listed immediately without writing to `environments.yaml`.
 
 ## 8. Frontend Model
 
@@ -137,6 +142,8 @@ Primary UI is `frontend/src/components/Workspace.tsx`.
 
 Behavior:
 - Environment list maps directly to configured repository directory entries.
+- Environment list also includes repositories auto-discovered under `environments_root`.
+- "Create Environment" button appears above the list and opens a host+name form.
 - New task form no longer asks for base/feature branch.
 - User can toggle `Run task in isolated worktree (mergeable)`.
 - Task list and task header display task `name` (topic).

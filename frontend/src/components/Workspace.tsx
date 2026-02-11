@@ -11,6 +11,7 @@ import { useParams } from "@solidjs/router";
 import {
   listHosts,
   listEnvironments,
+  createEnvironment,
   listTasks,
   createTask,
   getTask,
@@ -157,13 +158,19 @@ function CompletedItemRow(props: { item: CompletedItem }) {
   );
 }
 
-function TaskPane(props: { taskId: string; activeTab: () => RightTab }) {
+function TaskPane(props: { taskId: string; activeTab: () => RightTab; hideDiff?: boolean }) {
   const [task, { refetch: refetchTask }] = createResource(() => props.taskId, getTask);
   const [persistedOutput, { refetch: refetchOutput }] = createResource(
     () => props.taskId,
     async (id) => (await getTaskOutput(id)).events
   );
-  const [diff, { refetch: refetchDiff }] = createResource(() => props.taskId, getTaskDiff);
+  const [diff, { refetch: refetchDiff }] = createResource(
+    () => (props.hideDiff ? null : props.taskId),
+    async (id) => {
+      if (!id) return null;
+      return getTaskDiff(id);
+    }
+  );
   const taskData = createMemo(() => task.latest ?? task());
   const persistedEvents = createMemo(() => persistedOutput.latest ?? persistedOutput() ?? []);
   const diffData = createMemo(() => diff.latest ?? diff());
@@ -193,7 +200,9 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab }) {
         () => {
           setTimeout(() => refetchTask(), 300);
           setTimeout(() => refetchOutput(), 300);
-          setTimeout(() => refetchDiff(), 300);
+          if (!props.hideDiff) {
+            setTimeout(() => refetchDiff(), 300);
+          }
           setLiveEvents([]);
         }
       );
@@ -256,7 +265,9 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab }) {
                   try {
                     const res = await mergeTask(taskData()!.id);
                     setMergeMessage({ type: "success", text: res.message });
-                    refetchDiff();
+                    if (!props.hideDiff) {
+                      refetchDiff();
+                    }
                   } catch (err) {
                     setMergeMessage({
                       type: "error",
@@ -324,7 +335,7 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab }) {
           </div>
         </Show>
 
-        <Show when={props.activeTab() === "diff"}>
+        <Show when={!props.hideDiff && props.activeTab() === "diff"}>
           <div class="flex-1 min-h-0">
             <Show when={diff.loading && !diffData()}>
               <div class="text-gray-500 dark:text-gray-400">Loading diff...</div>
@@ -450,6 +461,94 @@ function NewTaskPane(props: {
   );
 }
 
+function NewEnvironmentPane(props: {
+  hosts: string[];
+  onCreated: (host: string, environment: string) => void;
+}) {
+  const [host, setHost] = createSignal("");
+  const [name, setName] = createSignal("");
+  const [loading, setLoading] = createSignal(false);
+  const [error, setError] = createSignal("");
+
+  createEffect(() => {
+    if (!host() && props.hosts.length > 0) {
+      setHost(props.hosts[0]);
+    }
+  });
+
+  const submit = async (e: Event) => {
+    e.preventDefault();
+    if (!host().trim() || !name().trim()) return;
+    setLoading(true);
+    setError("");
+    try {
+      const env = await createEnvironment({
+        host: host().trim(),
+        name: name().trim(),
+      });
+      props.onCreated(env.host, env.name);
+      setName("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create environment");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} class="h-full flex items-center justify-center">
+      <div class="w-full max-w-xl rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-5 space-y-4">
+        <div>
+          <div class="text-xl font-bold text-gray-900 dark:text-gray-100">Create Environment</div>
+          <div class="text-sm text-gray-500 dark:text-gray-400">
+            Creates a repository under the host environment root (default `~/slop/&lt;name&gt;`).
+          </div>
+        </div>
+        <div class="grid gap-3 md:grid-cols-2">
+          <div>
+            <label class="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+              Host
+            </label>
+            <input
+              list="hosts-list"
+              value={host()}
+              onInput={(e) => setHost(e.currentTarget.value)}
+              placeholder="host name"
+              class="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+            />
+            <datalist id="hosts-list">
+              <For each={props.hosts}>{(host) => <option value={host} />}</For>
+            </datalist>
+          </div>
+          <div>
+            <label class="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+              Environment Name
+            </label>
+            <input
+              value={name()}
+              onInput={(e) => setName(e.currentTarget.value)}
+              placeholder="my-project"
+              class="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+            />
+          </div>
+        </div>
+        <div class="flex items-center justify-end gap-2">
+          <button
+            type="submit"
+            disabled={loading() || !host().trim() || !name().trim()}
+            class="rounded-lg bg-blue-600 px-5 py-2 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {loading() ? "Creating..." : "Create Environment"}
+          </button>
+        </div>
+        <Show when={error()}>
+          <div class="text-sm text-red-600 dark:text-red-400">{error()}</div>
+        </Show>
+      </div>
+    </form>
+  );
+}
+
 export default function Workspace() {
   const params = useParams();
   const [hosts, { refetch: refetchHosts }] = createResource(listHosts);
@@ -468,6 +567,8 @@ export default function Workspace() {
   const [expanded, setExpanded] = createSignal<Record<string, boolean>>({});
   const [mode, setMode] = createSignal<RightMode>({ kind: "new-environment" });
   const [tab, setTab] = createSignal<RightTab>("conversation");
+  const [mobileMenuOpen, setMobileMenuOpen] = createSignal(false);
+  const [isMobile, setIsMobile] = createSignal(false);
 
   createEffect(() => {
     const id = setInterval(() => {
@@ -482,6 +583,20 @@ export default function Workspace() {
     const id = params.id;
     if (id) {
       setMode({ kind: "task", taskId: id });
+      setTab("conversation");
+    }
+  });
+
+  createEffect(() => {
+    const query = window.matchMedia("(max-width: 1023px)");
+    const apply = () => setIsMobile(query.matches);
+    apply();
+    query.addEventListener("change", apply);
+    onCleanup(() => query.removeEventListener("change", apply));
+  });
+
+  createEffect(() => {
+    if (isMobile()) {
       setTab("conversation");
     }
   });
@@ -512,86 +627,103 @@ export default function Workspace() {
     setExpanded((prev) => ({ ...prev, [name]: !prev[name] }));
   };
 
-  return (
-    <div class="h-screen bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
-      <div class="h-full grid grid-cols-[320px_1fr]">
-        <aside class="border-r border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 p-3 overflow-y-auto">
-          <div class="mb-4">
-            <h1 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Hosts</h1>
-            <Show when={hosts.loading && hostsData().length === 0}>
-              <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Loading hosts...</div>
-            </Show>
-            <div class="mt-2 space-y-1">
-              <For each={hostIds()}>
-                {(hostId) => {
-                  const host = createMemo(() => hostsById().get(hostId));
-                  return (
-                  <div class="rounded border border-gray-200 dark:border-gray-700 px-2 py-1 text-xs text-gray-700 dark:text-gray-300">
-                    <div class="font-medium">{host()?.host}</div>
-                    <Show when={host() && host()!.host !== host()!.hostname}>
-                      <div class="text-[11px] text-gray-500 dark:text-gray-400">{host()?.hostname}</div>
-                    </Show>
-                  </div>
-                  );
-                }}
-              </For>
-              <Show when={!hosts.loading && hostsData().length === 0}>
-                <div class="text-xs text-amber-600 dark:text-amber-400">No connected slopagents.</div>
-              </Show>
-            </div>
-          </div>
-
-          <div class="mb-3 flex items-center justify-between">
-            <h1 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Environments</h1>
-          </div>
-
-          <Show when={environments.loading && environmentsData().length === 0}>
-            <div class="text-xs text-gray-500 dark:text-gray-400">Loading environments...</div>
-          </Show>
-
-          <For each={environmentIds()}>
-            {(environmentId) => {
-              const env = createMemo(() => environmentsById().get(environmentId));
+  const sidebarContent = () => (
+    <>
+      <div class="mb-4">
+        <h1 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Hosts</h1>
+        <Show when={hosts.loading && hostsData().length === 0}>
+          <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Loading hosts...</div>
+        </Show>
+        <div class="mt-2 space-y-1">
+          <For each={hostIds()}>
+            {(hostId) => {
+              const host = createMemo(() => hostsById().get(hostId));
               return (
-              <div class="mb-2">
-                <div class="flex items-center justify-between px-2 py-2">
-                  <button
-                    onClick={() => toggleEnvironment(environmentId)}
-                    class="flex items-center gap-2 text-sm font-medium text-gray-800 dark:text-gray-200"
-                    title={env()?.directory || env()?.name || ""}
-                  >
-                    <span
-                      class={`inline-block transition-transform ${
-                        expanded()[environmentId] ? "rotate-90" : ""
-                      }`}
-                    >
-                      ▸
-                    </span>
-                    {env()?.host}:{basenameFromPath(env()?.directory || env()?.name || "")}
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (!env()) return;
-                      setMode({ kind: "new-task", host: env()!.host, environment: env()!.name });
-                      setTab("conversation");
-                    }}
-                    class="rounded-md border border-gray-300 dark:border-gray-600 px-2 py-0.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-800"
-                    title={`Create task in ${env()?.directory || env()?.name}`}
-                  >
-                    +
-                  </button>
+                <div class="rounded border border-gray-200 dark:border-gray-700 px-2 py-1 text-xs text-gray-700 dark:text-gray-300">
+                  <div class="font-medium">{host()?.host}</div>
+                  <Show when={host() && host()!.host !== host()!.hostname}>
+                    <div class="text-[11px] text-gray-500 dark:text-gray-400">{host()?.hostname}</div>
+                  </Show>
                 </div>
+              );
+            }}
+          </For>
+          <Show when={!hosts.loading && hostsData().length === 0}>
+            <div class="text-xs text-amber-600 dark:text-amber-400">No connected slopagents.</div>
+          </Show>
+        </div>
+      </div>
 
-                <Show when={expanded()[environmentId]}>
-                  <div class="pl-5 pr-1 py-1 space-y-1">
-                    <For each={tasksByEnvironment()[environmentId] || []}>
-                      {(taskId) => {
-                        const task = createMemo(() => tasksById().get(taskId));
-                        return (
+      <div class="mb-3 flex items-center justify-between">
+        <h1 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Environments</h1>
+        <button
+          onClick={() => {
+            setMode({ kind: "new-environment" });
+            setTab("conversation");
+            if (isMobile()) {
+              setMobileMenuOpen(false);
+            }
+          }}
+          class="rounded-md border border-gray-300 dark:border-gray-600 px-2 py-0.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-800"
+          title="Create environment"
+        >
+          + New
+        </button>
+      </div>
+
+      <Show when={environments.loading && environmentsData().length === 0}>
+        <div class="text-xs text-gray-500 dark:text-gray-400">Loading environments...</div>
+      </Show>
+
+      <For each={environmentIds()}>
+        {(environmentId) => {
+          const env = createMemo(() => environmentsById().get(environmentId));
+          return (
+            <div class="mb-2">
+              <div class="flex items-center justify-between px-2 py-2">
+                <button
+                  onClick={() => toggleEnvironment(environmentId)}
+                  class="flex items-center gap-2 text-sm font-medium text-gray-800 dark:text-gray-200"
+                  title={env()?.directory || env()?.name || ""}
+                >
+                  <span
+                    class={`inline-block transition-transform ${
+                      expanded()[environmentId] ? "rotate-90" : ""
+                    }`}
+                  >
+                    ▸
+                  </span>
+                  {env()?.host}:{basenameFromPath(env()?.directory || env()?.name || "")}
+                </button>
+                <button
+                  onClick={() => {
+                    if (!env()) return;
+                    setMode({ kind: "new-task", host: env()!.host, environment: env()!.name });
+                    setTab("conversation");
+                    if (isMobile()) {
+                      setMobileMenuOpen(false);
+                    }
+                  }}
+                  class="rounded-md border border-gray-300 dark:border-gray-600 px-2 py-0.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-800"
+                  title={`Create task in ${env()?.directory || env()?.name}`}
+                >
+                  +
+                </button>
+              </div>
+
+              <Show when={expanded()[environmentId]}>
+                <div class="pl-5 pr-1 py-1 space-y-1">
+                  <For each={tasksByEnvironment()[environmentId] || []}>
+                    {(taskId) => {
+                      const task = createMemo(() => tasksById().get(taskId));
+                      return (
                         <button
                           onClick={() => {
                             setMode({ kind: "task", taskId });
                             setTab("conversation");
+                            if (isMobile()) {
+                              setMobileMenuOpen(false);
+                            }
                           }}
                           class={`w-full rounded-md border px-2 py-2 text-left ${
                             selectedTaskId() === taskId
@@ -611,23 +743,65 @@ export default function Workspace() {
                             </Show>
                           </div>
                         </button>
-                        );
-                      }}
-                    </For>
-                    <Show when={(tasksByEnvironment()[environmentId] || []).length === 0}>
-                      <div class="text-xs text-gray-500 dark:text-gray-400 px-2 py-1">No tasks yet.</div>
-                    </Show>
-                  </div>
-                </Show>
-              </div>
-              );
-            }}
-          </For>
+                      );
+                    }}
+                  </For>
+                  <Show when={(tasksByEnvironment()[environmentId] || []).length === 0}>
+                    <div class="text-xs text-gray-500 dark:text-gray-400 px-2 py-1">No tasks yet.</div>
+                  </Show>
+                </div>
+              </Show>
+            </div>
+          );
+        }}
+      </For>
+    </>
+  );
+
+  return (
+    <div class="h-screen bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
+      <div class="lg:hidden flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-800">
+        <button
+          onClick={() => setMobileMenuOpen(true)}
+          class="rounded-md border border-gray-300 dark:border-gray-700 px-2 py-1 text-sm"
+          title="Open environments"
+        >
+          ☰
+        </button>
+        <div class="text-sm font-semibold text-gray-800 dark:text-gray-200">Slopcoder</div>
+        <div class="w-7" />
+      </div>
+
+      <div class="h-[calc(100vh-41px)] lg:h-full lg:grid lg:grid-cols-[320px_1fr]">
+        <aside class="hidden lg:block border-r border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 p-3 overflow-y-auto">
+          {sidebarContent()}
         </aside>
 
-        <main class="p-5 min-h-0 flex flex-col">
+        <Show when={isMobile() && mobileMenuOpen()}>
+          <div class="fixed inset-0 z-50 lg:hidden">
+            <button
+              class="absolute inset-0 bg-black/40"
+              onClick={() => setMobileMenuOpen(false)}
+              aria-label="Close menu"
+            />
+            <aside class="absolute left-0 top-0 h-full w-[88%] max-w-sm border-r border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 p-3 overflow-y-auto">
+              <div class="mb-3 flex items-center justify-between">
+                <div class="text-sm font-semibold text-gray-800 dark:text-gray-200">Navigation</div>
+                <button
+                  onClick={() => setMobileMenuOpen(false)}
+                  class="rounded-md border border-gray-300 dark:border-gray-700 px-2 py-1 text-xs"
+                >
+                  Close
+                </button>
+              </div>
+              {sidebarContent()}
+            </aside>
+          </div>
+        </Show>
+
+        <main class="p-3 lg:p-5 min-h-0 flex flex-col">
           <Show when={mode().kind === "task"}>
-            <div class="mb-4 flex gap-2 border-b border-gray-200 dark:border-gray-800">
+            <div class="mb-4 hidden lg:flex gap-2 border-b border-gray-200 dark:border-gray-800">
               <button
                 onClick={() => setTab("conversation")}
                 class={`px-3 py-2 text-sm font-medium ${
@@ -638,24 +812,31 @@ export default function Workspace() {
               >
                 Conversation
               </button>
-              <button
-                onClick={() => setTab("diff")}
-                class={`px-3 py-2 text-sm font-medium ${
-                  tab() === "diff"
-                    ? "text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400"
-                    : "text-gray-500 dark:text-gray-400"
-                }`}
-              >
-                Diff
-              </button>
+              <Show when={!isMobile()}>
+                <button
+                  onClick={() => setTab("diff")}
+                  class={`px-3 py-2 text-sm font-medium ${
+                    tab() === "diff"
+                      ? "text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400"
+                      : "text-gray-500 dark:text-gray-400"
+                  }`}
+                >
+                  Diff
+                </button>
+              </Show>
             </div>
           </Show>
 
           <div class="flex-1 min-h-0">
             <Show when={mode().kind === "new-environment"}>
-              <div class="h-full flex items-center justify-center text-sm text-gray-500 dark:text-gray-400">
-                Select an environment and press + to create a task.
-              </div>
+              <NewEnvironmentPane
+                hosts={hostIds()}
+                onCreated={(host, environment) => {
+                  refetchEnvironments();
+                  setMode({ kind: "new-task", host, environment });
+                  setTab("conversation");
+                }}
+              />
             </Show>
 
             <Show when={mode().kind === "new-task"}>
@@ -674,6 +855,7 @@ export default function Workspace() {
               <TaskPane
                 taskId={(mode() as { kind: "task"; taskId: string }).taskId}
                 activeTab={tab}
+                hideDiff={isMobile()}
               />
             </Show>
           </div>

@@ -116,6 +116,11 @@ impl PersistentTaskStore {
         self.env_directories.insert(name, directory);
     }
 
+    /// Check whether an environment is registered for persistence.
+    pub fn has_environment(&self, name: &str) -> bool {
+        self.env_directories.contains_key(name)
+    }
+
     /// Load all tasks from all registered environments.
     /// Validates worktrees and recovers crashed tasks.
     pub async fn load_all(&mut self) -> Result<(), PersistenceError> {

@@ -1,5 +1,7 @@
 # Directory where isolated task worktrees will be created
 worktrees_directory: "/tmp/slopcoder-worktrees"
+# Root scanned for additional environments and used by "Create Environment"
+environments_root: "/tmp/slopcoder-envs"
 
 environments:
   - "/scratch/arjun-nosudo/repos/nuprl/MultiPL-E"

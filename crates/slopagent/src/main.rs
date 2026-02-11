@@ -9,7 +9,7 @@ use slopcoder_core::{
     task::{Task, TaskId, TaskWorkspaceKind},
     AgentEvent,
 };
-use state::{AppState, StateError};
+use state::{AppState, CreateEnvironmentError, StateError};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use tokio::fs::{File, OpenOptions};
@@ -281,12 +281,9 @@ async fn handle_request(
     out_tx: mpsc::UnboundedSender<AgentEnvelope>,
 ) -> Result<AgentResponse, RpcError> {
     match request {
-        AgentRequest::ListEnvironments => {
-            let config = state.get_config().await;
-            Ok(AgentResponse::Environments {
-                environments: config.environments,
-            })
-        }
+        AgentRequest::ListEnvironments => Ok(AgentResponse::Environments {
+            environments: state.list_environments().await,
+        }),
         AgentRequest::CreateEnvironment { name } => create_environment(state, &name).await,
         AgentRequest::ListBranches { environment } => list_branches(state, &environment).await,
         AgentRequest::ListTasks => Ok(AgentResponse::Tasks {
@@ -307,16 +304,30 @@ async fn handle_request(
 }
 
 async fn create_environment(state: AppState, raw_name: &str) -> Result<AgentResponse, RpcError> {
-    let _ = (state, raw_name);
-    Err(RpcError::new(
-        StatusCode::METHOD_NOT_ALLOWED,
-        "Environments are configured in environments.yaml; runtime creation is not supported",
-    ))
+    match state.create_environment(raw_name).await {
+        Ok(environment) => Ok(AgentResponse::Environment { environment }),
+        Err(CreateEnvironmentError::NameRequired | CreateEnvironmentError::InvalidName) => {
+            Err(RpcError::new(
+                StatusCode::BAD_REQUEST,
+                "Environment name must be a simple directory name",
+            ))
+        }
+        Err(CreateEnvironmentError::AlreadyExists(path)) => Err(RpcError::new(
+            StatusCode::CONFLICT,
+            format!("Environment already exists at {}", path.display()),
+        )),
+        Err(CreateEnvironmentError::CreateDirectory(e)) => Err(RpcError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            e.to_string(),
+        )),
+        Err(CreateEnvironmentError::GitInit(e)) => {
+            Err(RpcError::new(StatusCode::INTERNAL_SERVER_ERROR, e))
+        }
+    }
 }
 
 async fn list_branches(state: AppState, name: &str) -> Result<AgentResponse, RpcError> {
-    let config = state.get_config().await;
-    let Some(env) = config.find(name) else {
+    let Some(env) = state.find_environment(name).await else {
         return Err(RpcError::new(
             StatusCode::NOT_FOUND,
             format!("Environment '{}' not found", name),
@@ -336,8 +347,7 @@ async fn create_task(
     req: AgentCreateTaskRequest,
     out_tx: mpsc::UnboundedSender<AgentEnvelope>,
 ) -> Result<AgentResponse, RpcError> {
-    let config = state.get_config().await;
-    let Some(env) = config.find(&req.environment) else {
+    let Some(env) = state.find_environment(&req.environment).await else {
         return Err(RpcError::new(
             StatusCode::NOT_FOUND,
             format!("Environment '{}' not found", req.environment),
@@ -536,11 +546,10 @@ async fn merge_task(state: AppState, task_id: TaskId) -> Result<AgentResponse, R
         )
     })?;
 
-    let config = state.get_config().await;
-    let Some(env) = config.find(&task.environment) else {
+    let Some(env) = state.find_environment(&task.environment).await else {
         return Err(RpcError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "Environment not found in config",
+            "Environment not found",
         ));
     };
 
