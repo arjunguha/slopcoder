@@ -28,8 +28,8 @@ pub enum StateError {
 
 #[derive(Debug, Error)]
 pub enum StartupError {
-    #[error("New environments directory validation failed: {0}")]
-    NewEnvDirValidation(EnvironmentError),
+    #[error("Worktrees directory validation failed: {0}")]
+    WorktreesDirValidation(EnvironmentError),
 
     #[error("Environment '{name}' failed validation: {source}")]
     EnvironmentValidation {
@@ -55,7 +55,6 @@ struct AppStateInner {
     interrupt_channels: std::collections::HashMap<TaskId, tokio::sync::oneshot::Sender<()>>,
     agent_config: AnyAgentConfig,
     branch_model: String,
-    config_path: PathBuf,
 }
 
 impl AppState {
@@ -65,8 +64,8 @@ impl AppState {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let config = EnvironmentConfig::load(&config_path).await?;
 
-        if let Err(err) = config.validate_new_environments_directory().await {
-            return Err(Box::new(StartupError::NewEnvDirValidation(err)));
+        if let Err(err) = config.validate_worktrees_directory().await {
+            return Err(Box::new(StartupError::WorktreesDirValidation(err)));
         }
 
         for env in &config.environments {
@@ -86,8 +85,12 @@ impl AppState {
         }
 
         let mut tasks = PersistentTaskStore::new();
+        let state_root = config.worktrees_directory.join(".slopcoder-state");
+        tokio::fs::create_dir_all(&state_root).await?;
         for env in &config.environments {
-            tasks.register_environment(env.name.clone(), env.directory.clone());
+            let env_state_dir = state_root.join(sanitize_for_path(&env.name));
+            tokio::fs::create_dir_all(&env_state_dir).await?;
+            tasks.register_environment(env.name.clone(), env_state_dir);
         }
         tasks.load_all().await?;
 
@@ -98,7 +101,6 @@ impl AppState {
                 interrupt_channels: std::collections::HashMap::new(),
                 agent_config: AnyAgentConfig::default(),
                 branch_model,
-                config_path,
             })),
         })
     }
@@ -111,9 +113,12 @@ impl AppState {
         self.inner
             .read()
             .await
-            .config
-            .find(name)
-            .map(|env| env.directory.clone())
+            .tasks
+            .get_environment_directory(name)
+    }
+
+    pub async fn get_worktrees_directory(&self) -> PathBuf {
+        self.inner.read().await.config.worktrees_directory.clone()
     }
 
     pub async fn get_agent_config(&self) -> AnyAgentConfig {
@@ -231,17 +236,28 @@ impl AppState {
             false
         }
     }
+}
 
-    pub async fn create_new_environment(
-        &self,
-        name: &str,
-    ) -> Result<slopcoder_core::environment::Environment, EnvironmentError> {
-        let mut inner = self.inner.write().await;
-        let env = inner.config.initialize_new_environment(name).await?;
-        inner
-            .tasks
-            .register_environment(env.name.clone(), env.directory.clone());
-        inner.config.save(&inner.config_path).await?;
-        Ok(env)
+fn sanitize_for_path(value: &str) -> String {
+    let mut out = String::new();
+    for ch in value.chars() {
+        let lower = ch.to_ascii_lowercase();
+        if lower.is_ascii_alphanumeric() || lower == '-' || lower == '_' {
+            out.push(lower);
+        } else {
+            out.push('-');
+        }
+    }
+
+    let compact = out
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+
+    if compact.is_empty() {
+        "env".to_string()
+    } else {
+        compact
     }
 }

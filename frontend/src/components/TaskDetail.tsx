@@ -791,33 +791,35 @@ export default function TaskDetail() {
           ← Back
         </A>
         <Show when={task()}>
-          <h1 class="text-xl font-bold text-gray-900 dark:text-gray-100 flex-1">{task()!.feature_branch}</h1>
+          <h1 class="text-xl font-bold text-gray-900 dark:text-gray-100 flex-1">{task()!.name}</h1>
           
-          <button
-            onClick={async () => {
-              if (merging()) return;
-              if (!confirm(`Merge ${task()!.feature_branch} into ${task()!.base_branch || "main"}?`)) return;
-              
-              setMerging(true);
-              setMergeMessage(null);
-              try {
-                const res = await mergeTask(task()!.id);
-                setMergeMessage({ text: res.message, type: "success" });
-              } catch (e) {
-                setMergeMessage({ text: e instanceof Error ? e.message : "Merge failed", type: "error" });
-              } finally {
-                setMerging(false);
-              }
-            }}
-            disabled={merging() || task()!.status === "running"}
-            class={`px-3 py-1 text-sm font-medium text-white rounded-md transition-colors ${
-              merging() || task()!.status === "running"
-                ? "bg-purple-400 cursor-not-allowed"
-                : "bg-purple-600 hover:bg-purple-700"
-            }`}
-          >
-            {merging() ? "Merging..." : "Merge"}
-          </button>
+          <Show when={task()!.workspace_kind === "worktree"}>
+            <button
+              onClick={async () => {
+                if (merging()) return;
+                if (!confirm(`Merge ${task()!.merge_branch || task()!.name} into ${task()!.base_branch || "current"}?`)) return;
+                
+                setMerging(true);
+                setMergeMessage(null);
+                try {
+                  const res = await mergeTask(task()!.id);
+                  setMergeMessage({ text: res.message, type: "success" });
+                } catch (e) {
+                  setMergeMessage({ text: e instanceof Error ? e.message : "Merge failed", type: "error" });
+                } finally {
+                  setMerging(false);
+                }
+              }}
+              disabled={merging() || task()!.status === "running"}
+              class={`px-3 py-1 text-sm font-medium text-white rounded-md transition-colors ${
+                merging() || task()!.status === "running"
+                  ? "bg-purple-400 cursor-not-allowed"
+                  : "bg-purple-600 hover:bg-purple-700"
+              }`}
+            >
+              {merging() ? "Merging..." : "Merge"}
+            </button>
+          </Show>
           
           <StatusBadge status={task()!.status} />
         </Show>
@@ -857,7 +859,7 @@ export default function TaskDetail() {
               <span>agent: {task()!.agent}</span>
               <span class="mx-2">•</span>
               <span>
-                feature: {task()!.feature_branch}
+                workspace: {task()!.workspace_kind}
               </span>
             </div>
 

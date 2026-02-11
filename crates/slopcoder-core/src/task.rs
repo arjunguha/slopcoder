@@ -1,7 +1,7 @@
 //! Task management for agent runs.
 //!
-//! A task represents a single agent session running in a worktree,
-//! along with its execution history and prompts.
+//! A task represents a single agent session running either directly in an
+//! environment repository or in an isolated worktree.
 
 use crate::anyagent::AgentKind;
 use chrono::{DateTime, Utc};
@@ -31,6 +31,17 @@ impl std::fmt::Display for TaskId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
+}
+
+/// Where the task executes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskWorkspaceKind {
+    /// Task runs directly in the configured environment repository directory.
+    #[default]
+    Environment,
+    /// Task runs in an isolated git worktree and can be merged back.
+    Worktree,
 }
 
 /// Status of a task.
@@ -83,6 +94,7 @@ impl PromptRun {
 
 /// A task representing an agent session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Task {
     /// Unique task identifier.
     pub id: TaskId,
@@ -91,17 +103,21 @@ pub struct Task {
     pub agent: AgentKind,
     /// Name of the environment this task belongs to.
     pub environment: String,
-    /// Base branch this task was created from.
+    /// Human-friendly task topic/name.
+    pub name: String,
+    /// Whether this runs in-place or in an isolated worktree.
+    pub workspace_kind: TaskWorkspaceKind,
+    /// Base branch used for isolated worktrees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
-    /// Feature branch this task is working on.
-    #[serde(default, alias = "branch")]
-    pub feature_branch: String,
-    /// Path to the worktree directory.
+    /// Branch used for merge when task runs in an isolated worktree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_branch: Option<String>,
+    /// Path to the task workspace directory.
     pub worktree_path: PathBuf,
     /// Current status of the task.
     pub status: TaskStatus,
-    /// Codex session ID (set after first run).
+    /// Session ID (set after first run).
     pub session_id: Option<Uuid>,
     /// When the task was created.
     pub created_at: DateTime<Utc>,
@@ -114,16 +130,20 @@ impl Task {
     pub fn new(
         agent: AgentKind,
         environment: String,
+        name: String,
+        workspace_kind: TaskWorkspaceKind,
         base_branch: Option<String>,
-        feature_branch: String,
+        merge_branch: Option<String>,
         worktree_path: PathBuf,
     ) -> Self {
         Self {
             id: TaskId::new(),
             agent,
             environment,
+            name,
+            workspace_kind,
             base_branch,
-            feature_branch,
+            merge_branch,
             worktree_path,
             status: TaskStatus::Pending,
             session_id: None,
@@ -236,13 +256,17 @@ mod tests {
         let task = Task::new(
             AgentKind::Codex,
             "my-env".to_string(),
+            "login fixes".to_string(),
+            TaskWorkspaceKind::Worktree,
             Some("main".to_string()),
-            "feature/test".to_string(),
+            Some("task/login-fixes".to_string()),
             PathBuf::from("/tmp/worktree"),
         );
 
         assert_eq!(task.base_branch.as_deref(), Some("main"));
-        assert_eq!(task.feature_branch, "feature/test");
+        assert_eq!(task.merge_branch.as_deref(), Some("task/login-fixes"));
+        assert_eq!(task.name, "login fixes");
+        assert_eq!(task.workspace_kind, TaskWorkspaceKind::Worktree);
         assert_eq!(task.status, TaskStatus::Pending);
         assert!(task.session_id.is_none());
         assert!(task.history.is_empty());
@@ -254,8 +278,10 @@ mod tests {
         let mut task = Task::new(
             AgentKind::Codex,
             "env".to_string(),
-            Some("main".to_string()),
-            "feature/one".to_string(),
+            "topic".to_string(),
+            TaskWorkspaceKind::Environment,
+            None,
+            None,
             PathBuf::from("/tmp"),
         );
 
@@ -281,15 +307,19 @@ mod tests {
         let task1 = Task::new(
             AgentKind::Codex,
             "env1".to_string(),
-            Some("main".to_string()),
-            "feature/a".to_string(),
+            "topic one".to_string(),
+            TaskWorkspaceKind::Environment,
+            None,
+            None,
             PathBuf::from("/tmp/1"),
         );
         let task2 = Task::new(
             AgentKind::Codex,
             "env2".to_string(),
+            "topic two".to_string(),
+            TaskWorkspaceKind::Worktree,
             Some("main".to_string()),
-            "feature/b".to_string(),
+            Some("task/topic-two".to_string()),
             PathBuf::from("/tmp/2"),
         );
 
@@ -311,17 +341,17 @@ mod tests {
         let mut task = Task::new(
             AgentKind::Codex,
             "env".to_string(),
-            Some("main".to_string()),
-            "feature/test".to_string(),
+            "topic".to_string(),
+            TaskWorkspaceKind::Environment,
+            None,
+            None,
             PathBuf::from("/tmp"),
         );
 
-        // Start a run
         task.start_run("Test prompt".to_string());
         assert!(task.is_running());
         assert!(!task.can_run());
 
-        // Interrupt the run
         task.interrupt_run();
         assert_eq!(task.status, TaskStatus::Interrupted);
         assert!(task.can_run());
@@ -335,23 +365,22 @@ mod tests {
         let mut task = Task::new(
             AgentKind::Codex,
             "env".to_string(),
-            Some("main".to_string()),
-            "feature/test".to_string(),
+            "topic".to_string(),
+            TaskWorkspaceKind::Environment,
+            None,
+            None,
             PathBuf::from("/tmp"),
         );
 
-        // First run - interrupted
         task.start_run("First prompt".to_string());
         task.interrupt_run();
         assert_eq!(task.status, TaskStatus::Interrupted);
         assert!(task.can_run());
 
-        // Resume with new prompt
         task.start_run("Second prompt".to_string());
         assert!(task.is_running());
         assert_eq!(task.history.len(), 2);
 
-        // Complete successfully
         task.complete_run(true);
         assert_eq!(task.status, TaskStatus::Completed);
         assert_eq!(task.history.len(), 2);
@@ -364,22 +393,21 @@ mod tests {
         let mut task = Task::new(
             AgentKind::Codex,
             "env".to_string(),
-            Some("main".to_string()),
-            "feature/test".to_string(),
+            "topic".to_string(),
+            TaskWorkspaceKind::Environment,
+            None,
+            None,
             PathBuf::from("/tmp"),
         );
 
-        // First run - interrupted
         task.start_run("First prompt".to_string());
         task.interrupt_run();
         assert_eq!(task.status, TaskStatus::Interrupted);
 
-        // Second run - interrupted again
         task.start_run("Second prompt".to_string());
         task.interrupt_run();
         assert_eq!(task.status, TaskStatus::Interrupted);
 
-        // Third run - complete successfully
         task.start_run("Third prompt".to_string());
         task.complete_run(true);
         assert_eq!(task.status, TaskStatus::Completed);

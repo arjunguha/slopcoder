@@ -317,8 +317,10 @@ struct TaskResponse {
     host: String,
     agent: String,
     environment: String,
+    name: String,
+    workspace_kind: String,
     base_branch: Option<String>,
-    feature_branch: String,
+    merge_branch: Option<String>,
     status: String,
     session_id: Option<String>,
     created_at: String,
@@ -341,8 +343,10 @@ impl TaskResponse {
             host: host.to_string(),
             agent: format!("{:?}", task.agent).to_lowercase(),
             environment: task.environment.clone(),
+            name: task.name.clone(),
+            workspace_kind: format!("{:?}", task.workspace_kind).to_lowercase(),
             base_branch: task.base_branch.clone(),
-            feature_branch: task.feature_branch.clone(),
+            merge_branch: task.merge_branch.clone(),
             status: format!("{:?}", task.status).to_lowercase(),
             session_id: task.session_id.map(|id| id.to_string()),
             created_at: task.created_at.to_rfc3339(),
@@ -404,8 +408,10 @@ async fn get_task(id: String, state: AppState) -> Result<impl Reply, Infallible>
 struct CreateTaskRequest {
     host: String,
     environment: String,
-    base_branch: Option<String>,
-    feature_branch: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    use_worktree: bool,
     prompt: String,
     #[serde(default)]
     agent: Option<slopcoder_core::anyagent::AgentKind>,
@@ -434,8 +440,8 @@ async fn create_task(req: CreateTaskRequest, state: AppState) -> Result<impl Rep
 
     let request = AgentCreateTaskRequest {
         environment: req.environment,
-        base_branch: req.base_branch,
-        feature_branch: req.feature_branch,
+        name: req.name,
+        use_worktree: req.use_worktree,
         prompt: req.prompt,
         agent: req.agent,
     };

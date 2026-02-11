@@ -12,8 +12,6 @@ import {
   listHosts,
   listEnvironments,
   listTasks,
-  listBranches,
-  createEnvironment,
   createTask,
   getTask,
   getTaskOutput,
@@ -236,35 +234,37 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab }) {
       <Show when={taskData()}>
         <div class="mb-4 flex items-center justify-between gap-3">
           <div>
-            <div class="text-xl font-bold text-gray-900 dark:text-gray-100">{taskData()!.feature_branch}</div>
+            <div class="text-xl font-bold text-gray-900 dark:text-gray-100">{taskData()!.name}</div>
             <div class="text-xs text-gray-500 dark:text-gray-400">
-              {taskData()!.host}/{taskData()!.environment} • base: {taskData()!.base_branch || "main"} • agent: {taskData()!.agent}
+              {taskData()!.host}/{taskData()!.environment} • {taskData()!.workspace_kind} • agent: {taskData()!.agent}
             </div>
           </div>
           <div class="flex items-center gap-2">
-            <button
-              disabled={merging() || taskData()!.status === "running"}
-              onClick={async () => {
-                if (!confirm(`Merge ${taskData()!.feature_branch} into ${taskData()!.base_branch || "main"}?`)) return;
-                setMerging(true);
-                setMergeMessage(null);
-                try {
-                  const res = await mergeTask(taskData()!.id);
-                  setMergeMessage({ type: "success", text: res.message });
-                  refetchDiff();
-                } catch (err) {
-                  setMergeMessage({
-                    type: "error",
-                    text: err instanceof Error ? err.message : "Merge failed",
-                  });
-                } finally {
-                  setMerging(false);
-                }
-              }}
-              class="rounded-md bg-purple-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {merging() ? "Merging..." : "Merge"}
-            </button>
+            <Show when={taskData()!.workspace_kind === "worktree"}>
+              <button
+                disabled={merging() || taskData()!.status === "running"}
+                onClick={async () => {
+                  if (!confirm(`Merge ${taskData()!.merge_branch || taskData()!.name} into ${taskData()!.base_branch || "current"}?`)) return;
+                  setMerging(true);
+                  setMergeMessage(null);
+                  try {
+                    const res = await mergeTask(taskData()!.id);
+                    setMergeMessage({ type: "success", text: res.message });
+                    refetchDiff();
+                  } catch (err) {
+                    setMergeMessage({
+                      type: "error",
+                      text: err instanceof Error ? err.message : "Merge failed",
+                    });
+                  } finally {
+                    setMerging(false);
+                  }
+                }}
+                class="rounded-md bg-purple-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {merging() ? "Merging..." : "Merge"}
+              </button>
+            </Show>
             <StatusBadge status={taskData()!.status} />
           </div>
         </div>
@@ -336,147 +336,13 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab }) {
   );
 }
 
-function NewEnvironmentPane(props: {
-  onCreated: (host: string, environmentName: string, firstTaskId?: string) => void;
-}) {
-  const [hosts] = createResource(listHosts);
-  const [selectedHost, setSelectedHost] = createSignal("");
-  const [name, setName] = createSignal("");
-  const [prompt, setPrompt] = createSignal("");
-  const [agent, setAgent] = createSignal<AgentKind>("codex");
-  const [featureBranch, setFeatureBranch] = createSignal("");
-  const [baseBranch, setBaseBranch] = createSignal("main");
-  const [loading, setLoading] = createSignal(false);
-  const [error, setError] = createSignal("");
-
-  let promptRef: HTMLTextAreaElement | undefined;
-  createEffect(() => {
-    setTimeout(() => promptRef?.focus(), 0);
-  });
-
-  const submit = async (e: Event) => {
-    e.preventDefault();
-    if (!name().trim() || !selectedHost().trim()) return;
-    setLoading(true);
-    setError("");
-    try {
-      await createEnvironment({ host: selectedHost().trim(), name: name().trim() });
-      if (prompt().trim()) {
-        const task = await createTask({
-          host: selectedHost().trim(),
-          environment: name().trim(),
-          prompt: prompt(),
-          agent: agent(),
-          base_branch: baseBranch().trim() || undefined,
-          feature_branch: featureBranch().trim() || undefined,
-        });
-        props.onCreated(selectedHost().trim(), name().trim(), task.id);
-      } else {
-        props.onCreated(selectedHost().trim(), name().trim());
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create environment");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <form onSubmit={submit} class="h-full flex flex-col min-h-0">
-      <div class="flex-1 min-h-0 flex items-center justify-center">
-        <div class="text-4xl font-extrabold tracking-tight text-gray-900 dark:text-gray-100 text-center">
-          Let's Build
-        </div>
-      </div>
-
-      <div class="mt-4">
-        <div class="grid gap-3 md:grid-cols-5 mb-3">
-          <select
-            value={selectedHost()}
-            onChange={(e) => setSelectedHost(e.currentTarget.value)}
-            class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
-          >
-            <option value="">Select host</option>
-            <For each={hosts() || []}>
-              {(host) => (
-                <option value={host.host}>
-                  {host.host}
-                  {host.host !== host.hostname ? ` (${host.hostname})` : ""}
-                </option>
-              )}
-            </For>
-          </select>
-          <input
-            value={name()}
-            onInput={(e) => setName(e.currentTarget.value)}
-            placeholder="Environment name"
-            class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
-          />
-          <select
-            value={agent()}
-            onChange={(e) => setAgent(e.currentTarget.value as AgentKind)}
-            class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
-          >
-            <option value="codex">Codex</option>
-            <option value="claude">Claude</option>
-            <option value="cursor">Cursor</option>
-            <option value="gemini">Gemini</option>
-            <option value="opencode">OpenCode</option>
-          </select>
-          <input
-            value={baseBranch()}
-            onInput={(e) => setBaseBranch(e.currentTarget.value)}
-            placeholder="Base branch"
-            class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
-          />
-          <input
-            value={featureBranch()}
-            onInput={(e) => setFeatureBranch(e.currentTarget.value)}
-            placeholder="Feature branch (optional)"
-            class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
-          />
-        </div>
-        <textarea
-          ref={promptRef}
-          rows={4}
-          value={prompt()}
-          onInput={(e) => setPrompt(e.currentTarget.value)}
-          placeholder="Send the first prompt now (optional), or leave blank to just create the environment."
-          class="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
-        />
-        <div class="mt-3 flex justify-end">
-          <button
-            type="submit"
-            disabled={loading() || !name().trim() || !selectedHost().trim()}
-            class="rounded-lg bg-blue-600 px-5 py-2 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {loading() ? "Creating..." : "Create Environment"}
-          </button>
-        </div>
-        <Show when={!hosts.loading && (hosts() || []).length === 0}>
-          <div class="mt-2 text-sm text-amber-600 dark:text-amber-400">
-            No slopagents connected. Start a slopagent to create environments.
-          </div>
-        </Show>
-        <Show when={error()}>
-          <div class="mt-2 text-sm text-red-600 dark:text-red-400">{error()}</div>
-        </Show>
-      </div>
-    </form>
-  );
-}
-
 function NewTaskPane(props: {
   host: string;
   environment: string;
   onCreated: (taskId: string) => void;
 }) {
-  const [branches] = createResource(
-    () => `${props.host}::${props.environment}`,
-    () => listBranches(props.environment, props.host)
-  );
-  const [baseBranch, setBaseBranch] = createSignal("");
-  const [featureBranch, setFeatureBranch] = createSignal("");
+  const [taskName, setTaskName] = createSignal("");
+  const [useWorktree, setUseWorktree] = createSignal(true);
   const [agent, setAgent] = createSignal<AgentKind>("codex");
   const [prompt, setPrompt] = createSignal("");
   const [loading, setLoading] = createSignal(false);
@@ -497,8 +363,8 @@ function NewTaskPane(props: {
         host: props.host,
         environment: props.environment,
         prompt: prompt(),
-        base_branch: baseBranch().trim() || undefined,
-        feature_branch: featureBranch().trim() || undefined,
+        name: taskName().trim() || undefined,
+        use_worktree: useWorktree(),
         agent: agent(),
       });
       props.onCreated(task.id);
@@ -523,19 +389,11 @@ function NewTaskPane(props: {
       </div>
 
       <div class="mt-4">
-        <div class="grid gap-3 md:grid-cols-3 mb-3">
-          <select
-            value={baseBranch()}
-            onChange={(e) => setBaseBranch(e.currentTarget.value)}
-            class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
-          >
-            <option value="">Base branch (default: main)</option>
-            <For each={branches() || []}>{(branch) => <option value={branch}>{branch}</option>}</For>
-          </select>
+        <div class="grid gap-3 md:grid-cols-2 mb-3">
           <input
-            value={featureBranch()}
-            onInput={(e) => setFeatureBranch(e.currentTarget.value)}
-            placeholder="Feature branch (optional)"
+            value={taskName()}
+            onInput={(e) => setTaskName(e.currentTarget.value)}
+            placeholder="Task topic (optional)"
             class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
           />
           <select
@@ -550,6 +408,14 @@ function NewTaskPane(props: {
             <option value="opencode">OpenCode</option>
           </select>
         </div>
+        <label class="mb-3 flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+          <input
+            type="checkbox"
+            checked={useWorktree()}
+            onChange={(e) => setUseWorktree(e.currentTarget.checked)}
+          />
+          Run task in isolated worktree (mergeable)
+        </label>
         <textarea
           ref={promptRef}
           rows={4}
@@ -668,15 +534,6 @@ export default function Workspace() {
 
           <div class="mb-3 flex items-center justify-between">
             <h1 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Environments</h1>
-            <button
-              onClick={() => {
-                setMode({ kind: "new-environment" });
-                setTab("conversation");
-              }}
-              class="rounded-md bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700"
-            >
-              + New
-            </button>
           </div>
 
           <Show when={environments.loading && environmentsData().length === 0}>
@@ -733,7 +590,7 @@ export default function Workspace() {
                           }`}
                         >
                           <div class="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                            {task()?.feature_branch}
+                            {task()?.name}
                           </div>
                           <div class="mt-1 flex items-center justify-between">
                             <span class="text-[11px] text-gray-500 dark:text-gray-400">
@@ -786,20 +643,9 @@ export default function Workspace() {
 
           <div class="flex-1 min-h-0">
             <Show when={mode().kind === "new-environment"}>
-              <NewEnvironmentPane
-                onCreated={(host, environmentName, firstTaskId) => {
-                  refetchEnvironments();
-                  refetchTasks();
-                  setExpanded((prev) => ({ ...prev, [`${host}::${environmentName}`]: true }));
-                  if (firstTaskId) {
-                    setMode({ kind: "task", taskId: firstTaskId });
-                    setTab("conversation");
-                  } else {
-                    setMode({ kind: "new-task", host, environment: environmentName });
-                    setTab("conversation");
-                  }
-                }}
-              />
+              <div class="h-full flex items-center justify-center text-sm text-gray-500 dark:text-gray-400">
+                Select an environment and press + to create a task.
+              </div>
             </Show>
 
             <Show when={mode().kind === "new-task"}>

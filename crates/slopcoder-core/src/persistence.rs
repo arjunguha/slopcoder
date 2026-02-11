@@ -176,6 +176,7 @@ impl PersistentTaskStore {
 
         let file = TasksFile { tasks };
         let path = TasksFile::path_for_env(env_dir);
+        tokio::fs::create_dir_all(env_dir).await?;
         file.save(&path).await?;
 
         Ok(())
@@ -219,6 +220,11 @@ impl PersistentTaskStore {
             .values()
             .filter(|t| t.environment == environment)
             .collect()
+    }
+
+    /// Get the persistence directory registered for an environment.
+    pub fn get_environment_directory(&self, environment: &str) -> Option<PathBuf> {
+        self.env_directories.get(environment).cloned()
     }
 
     /// Check if a task's worktree still exists.
@@ -293,15 +299,17 @@ mod tests {
     fn create_test_task(
         env: &str,
         base_branch: Option<&str>,
-        feature_branch: &str,
+        merge_branch: &str,
         worktree: PathBuf,
     ) -> Task {
         Task {
             id: TaskId::new(),
             agent: AgentKind::Codex,
             environment: env.to_string(),
+            name: "test task".to_string(),
+            workspace_kind: crate::task::TaskWorkspaceKind::Worktree,
             base_branch: base_branch.map(|b| b.to_string()),
-            feature_branch: feature_branch.to_string(),
+            merge_branch: Some(merge_branch.to_string()),
             worktree_path: worktree,
             status: TaskStatus::Completed,
             session_id: None,
@@ -329,7 +337,10 @@ mod tests {
 
         let loaded = TasksFile::load(&path).await.unwrap();
         assert_eq!(loaded.tasks.len(), 1);
-        assert_eq!(loaded.tasks[0].feature_branch, "feature/test");
+        assert_eq!(
+            loaded.tasks[0].merge_branch.as_deref(),
+            Some("feature/test")
+        );
     }
 
     #[tokio::test]

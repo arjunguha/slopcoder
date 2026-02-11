@@ -1,8 +1,6 @@
-# Directory where new environments are created
-new_environments_directory: "/tmp/slopcoder-environments"
+# Directory where isolated task worktrees will be created
+worktrees_directory: "/tmp/slopcoder-worktrees"
 
 environments:
-  - name: "MultiPL-E"
-    directory: "/scratch/arjun-nosudo/repos/nuprl/MultiPL-E"
-  - name: "slopcoder-test"
-    directory: "/tmp/slopcoder-test"
+  - "/scratch/arjun-nosudo/repos/nuprl/MultiPL-E"
+  - "/tmp/slopcoder-test"

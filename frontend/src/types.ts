@@ -33,8 +33,10 @@ export interface Task {
   host: string;
   agent: AgentKind;
   environment: string;
+  name: string;
+  workspace_kind: "environment" | "worktree";
   base_branch?: string | null;
-  feature_branch: string;
+  merge_branch?: string | null;
   status: "pending" | "running" | "completed" | "failed" | "interrupted";
   session_id: string | null;
   created_at: string;
@@ -45,8 +47,8 @@ export interface Task {
 export interface CreateTaskRequest {
   host: string;
   environment: string;
-  base_branch?: string;
-  feature_branch?: string;
+  name?: string;
+  use_worktree?: boolean;
   prompt: string;
   agent: AgentKind;
 }

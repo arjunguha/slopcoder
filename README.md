@@ -18,41 +18,26 @@ Slopcoder relies on git worktrees. If you don't know how to use them, you won't
 be able to use Slopcoder.
 
 Each `slopagent` has its own `environments.yaml` and manages repositories local
-to that host. For a repository `R`, each agent assumes:
-- `R/bare` is a bare clone.
-- `R/<branch-worktree>` directories are Git worktrees.
-- `R/tasks.yaml` stores task state for that environment.
-- `R/task-<id>.jsonl` stores streamed task output.
+to that host. Environments are now configured as checked-out Git repository
+directories, plus a shared directory for isolated worktrees.
 
-You should not modify the .jsonl files or tasks.yaml. However, you are free to
-directly update, or even delete, each worktree. When you create a new task from
-the Slopcoder web interface, it creates a new feature branch and runs the agent
-in a new worktree. When the agent is done, it is up to you use the command-line
-on your local machine to merge the changes into another branch, make your own
-changes, or discard the branch entirely.
+Task metadata is stored under:
+- `<worktrees_directory>/.slopcoder-state/<environment-slug>/tasks.yaml`
+- `<worktrees_directory>/.slopcoder-state/<environment-slug>/task-<id>.jsonl`
+
+When creating a task, you can choose:
+- In-place task: run directly in the environment repository directory.
+- Isolated task: create a new worktree and branch based on the environment's
+  current branch; these are mergeable via the UI/API.
 
 Create `environments.yaml` on each host where a `slopagent` runs:
 
 ```yaml
-new_environments_directory: "/path/to/parent/for/new/envs"
+worktrees_directory: "/path/to/worktrees"
 environments:
-  - name: "MultiPL-E"
-    directory: "/scratch/arjun-nosudo/repos/nuprl/MultiPL-E"
+  - "/scratch/arjun-nosudo/repos/nuprl/MultiPL-E"
+  - "/path/to/another/checked-out/repo"
 ```
-
-And here are the contents of that directory:
-
-```
-drwxrwx---+  8 arjun-nosudo arjun-nosudo  4096 Jan  3 09:01 bare
-drwxrwx---+ 14 arjun-nosudo arjun-nosudo  4096 Jan  3 09:01 remove_logprobs
-drwxrwx---+ 14 arjun-nosudo arjun-nosudo  4096 Jan  3 09:33 remove_logprobs2
--rw-rw----+  1 arjun-nosudo arjun-nosudo 17115 Jan  3 09:34 task-3d01c34c-e08b-4117-a4bd-b05aa1699e27.jsonl
--rw-rw----+  1 arjun-nosudo arjun-nosudo 24563 Jan  3 09:22 task-a5143a82-2688-451b-aaa9-d08ca281ed00.jsonl
--rw-rw----+  1 arjun-nosudo arjun-nosudo  1113 Jan  3 09:34 tasks.yaml
-```
-
-The subdirectory bare is the bare clone, and the two other directories are
-worktrees that Slopcoder created.
 
 Start the coordinator:
 

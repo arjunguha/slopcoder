@@ -11,93 +11,75 @@
 use slopcoder_core::{
     anyagent::{resume_anyagent, spawn_anyagent, AgentKind, AnyAgentConfig},
     environment::{Environment, EnvironmentConfig},
-    task::{Task, TaskStatus},
+    task::{Task, TaskStatus, TaskWorkspaceKind},
 };
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use tokio::process::Command;
 
-/// Set up a test environment with a bare git repo.
+/// Set up a test environment with a checked-out git repository.
 async fn setup_test_env() -> (TempDir, Environment) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let base_path = temp_dir.path().to_path_buf();
 
-    // Create bare repo
-    let bare_path = base_path.join("bare");
-    tokio::fs::create_dir_all(&bare_path)
+    // Create checked-out repository directory.
+    let repo_path = base_path.join("repo");
+    tokio::fs::create_dir_all(&repo_path)
         .await
-        .expect("Failed to create bare dir");
+        .expect("Failed to create repo dir");
 
-    // Initialize bare repo
+    // Initialize repository.
     let status = Command::new("git")
-        .args(["init", "--bare"])
-        .current_dir(&bare_path)
+        .args(["init", "--initial-branch=main"])
+        .current_dir(&repo_path)
         .status()
         .await
         .expect("Failed to run git init");
     assert!(status.success());
 
-    // Create a temporary clone to make initial commit
-    let clone_path = base_path.join("temp_clone");
-    let status = Command::new("git")
-        .args([
-            "clone",
-            bare_path.to_str().unwrap(),
-            clone_path.to_str().unwrap(),
-        ])
-        .status()
-        .await
-        .expect("Failed to clone");
-    assert!(status.success());
-
     // Configure git and create initial commit
     Command::new("git")
         .args(["config", "user.email", "test@example.com"])
-        .current_dir(&clone_path)
+        .current_dir(&repo_path)
         .status()
         .await
         .unwrap();
 
     Command::new("git")
         .args(["config", "user.name", "Test User"])
-        .current_dir(&clone_path)
+        .current_dir(&repo_path)
         .status()
         .await
         .unwrap();
 
-    tokio::fs::write(clone_path.join("README.md"), "# Test Project\n")
+    tokio::fs::write(repo_path.join("README.md"), "# Test Project\n")
         .await
         .expect("Failed to write README");
 
     Command::new("git")
         .args(["add", "."])
-        .current_dir(&clone_path)
+        .current_dir(&repo_path)
         .status()
         .await
         .unwrap();
 
     Command::new("git")
         .args(["commit", "-m", "Initial commit"])
-        .current_dir(&clone_path)
+        .current_dir(&repo_path)
         .status()
         .await
         .unwrap();
-
-    Command::new("git")
-        .args(["push", "origin", "HEAD:main"])
-        .current_dir(&clone_path)
-        .status()
-        .await
-        .unwrap();
-
-    // Clean up clone
-    tokio::fs::remove_dir_all(&clone_path).await.ok();
 
     let env = Environment {
         name: "test-env".to_string(),
-        directory: base_path,
+        directory: repo_path,
     };
 
     (temp_dir, env)
+}
+
+fn worktrees_dir(base: &Path) -> PathBuf {
+    base.join("worktrees")
 }
 
 #[tokio::test]
@@ -115,10 +97,11 @@ async fn test_environment_validation() {
 #[tokio::test]
 async fn test_worktree_creation() {
     let (_temp_dir, env) = setup_test_env().await;
+    let worktrees = worktrees_dir(_temp_dir.path());
 
     // Create worktree
     let worktree_path = env
-        .create_worktree("main")
+        .create_worktree_from_base(&worktrees, "main", "task-worktree-creation")
         .await
         .expect("Should create worktree");
 
@@ -126,7 +109,9 @@ async fn test_worktree_creation() {
     assert!(worktree_path.join("README.md").exists());
 
     // Should fail if worktree already exists
-    let result = env.create_worktree("main").await;
+    let result = env
+        .create_worktree_from_base(&worktrees, "main", "task-worktree-creation")
+        .await;
     assert!(result.is_err());
 }
 
@@ -137,9 +122,10 @@ async fn test_worktree_creation() {
 ))]
 async fn run_agent_hello_world(kind: AgentKind) {
     let (_temp_dir, env) = setup_test_env().await;
+    let worktrees = worktrees_dir(_temp_dir.path());
 
     let worktree_path = env
-        .create_worktree("main")
+        .create_worktree_from_base(&worktrees, "main", "task-hello-world")
         .await
         .expect("Should create worktree");
 
@@ -190,9 +176,10 @@ async fn run_agent_hello_world(kind: AgentKind) {
 ))]
 async fn run_agent_resume(kind: AgentKind) {
     let (_temp_dir, env) = setup_test_env().await;
+    let worktrees = worktrees_dir(_temp_dir.path());
 
     let worktree_path = env
-        .create_worktree("main")
+        .create_worktree_from_base(&worktrees, "main", "task-resume")
         .await
         .expect("Should create worktree");
 
@@ -266,17 +253,20 @@ async fn test_claude_agent_resume() {
 #[tokio::test]
 async fn test_task_with_environment() {
     let (_temp_dir, env) = setup_test_env().await;
+    let worktrees = worktrees_dir(_temp_dir.path());
 
     let worktree_path = env
-        .create_worktree("main")
+        .create_worktree_from_base(&worktrees, "main", "task-with-environment")
         .await
         .expect("Should create worktree");
 
     let mut task = Task::new(
         AgentKind::Codex,
         env.name.clone(),
+        "topic".to_string(),
+        TaskWorkspaceKind::Worktree,
         Some("main".to_string()),
-        "feature/test-task".to_string(),
+        Some("task/test-task".to_string()),
         worktree_path.clone(),
     );
 
@@ -293,15 +283,14 @@ async fn test_task_with_environment() {
 #[tokio::test]
 async fn test_config_loading() {
     let yaml = r#"
-new_environments_directory: "/tmp/new-envs"
+worktrees_directory: "/tmp/worktrees"
 environments:
-  - name: "test-project"
-    directory: "/tmp/test-project"
+  - "/tmp/test-project"
 "#;
 
     let config = EnvironmentConfig::from_yaml(yaml).expect("Should parse config");
     assert_eq!(config.environments.len(), 1);
-    assert_eq!(config.environments[0].name, "test-project");
+    assert_eq!(config.environments[0].name, "/tmp/test-project".to_string());
 }
 
 #[cfg(any(
@@ -312,9 +301,10 @@ environments:
 ))]
 async fn run_agent_interrupt(kind: AgentKind) {
     let (_temp_dir, env) = setup_test_env().await;
+    let worktrees = worktrees_dir(_temp_dir.path());
 
     let worktree_path = env
-        .create_worktree("main")
+        .create_worktree_from_base(&worktrees, "main", "task-interrupt")
         .await
         .expect("Should create worktree");
 
@@ -370,9 +360,10 @@ async fn run_agent_interrupt(kind: AgentKind) {
 ))]
 async fn run_agent_resume_after_interrupt(kind: AgentKind) {
     let (_temp_dir, env) = setup_test_env().await;
+    let worktrees = worktrees_dir(_temp_dir.path());
 
     let worktree_path = env
-        .create_worktree("main")
+        .create_worktree_from_base(&worktrees, "main", "task-resume-after-interrupt")
         .await
         .expect("Should create worktree");
 
@@ -441,9 +432,10 @@ async fn run_agent_resume_after_interrupt(kind: AgentKind) {
 ))]
 async fn run_agent_double_interrupt(kind: AgentKind) {
     let (_temp_dir, env) = setup_test_env().await;
+    let worktrees = worktrees_dir(_temp_dir.path());
 
     let worktree_path = env
-        .create_worktree("main")
+        .create_worktree_from_base(&worktrees, "main", "task-double-interrupt")
         .await
         .expect("Should create worktree");
 
@@ -589,9 +581,10 @@ async fn test_cursor_agent_double_interrupt() {
 #[cfg(feature = "test-opencode")]
 async fn run_opencode_hello_world() {
     let (_temp_dir, env) = setup_test_env().await;
+    let worktrees = worktrees_dir(_temp_dir.path());
 
     let worktree_path = env
-        .create_worktree("main")
+        .create_worktree_from_base(&worktrees, "main", "task-opencode-hello")
         .await
         .expect("Should create worktree");
 
@@ -636,9 +629,10 @@ async fn run_opencode_hello_world() {
 #[cfg(feature = "test-opencode")]
 async fn run_opencode_resume() {
     let (_temp_dir, env) = setup_test_env().await;
+    let worktrees = worktrees_dir(_temp_dir.path());
 
     let worktree_path = env
-        .create_worktree("main")
+        .create_worktree_from_base(&worktrees, "main", "task-opencode-resume")
         .await
         .expect("Should create worktree");
 

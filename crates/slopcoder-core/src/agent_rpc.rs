@@ -76,9 +76,9 @@ pub enum AgentResponse {
 pub struct AgentCreateTaskRequest {
     pub environment: String,
     #[serde(default)]
-    pub base_branch: Option<String>,
+    pub name: Option<String>,
     #[serde(default)]
-    pub feature_branch: Option<String>,
+    pub use_worktree: bool,
     pub prompt: String,
     #[serde(default)]
     pub agent: Option<AgentKind>,

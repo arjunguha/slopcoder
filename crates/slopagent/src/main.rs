@@ -5,8 +5,8 @@ use http::StatusCode;
 use slopcoder_core::{
     agent_rpc::{AgentCreateTaskRequest, AgentEnvelope, AgentRequest, AgentResponse},
     anyagent::{resume_anyagent, spawn_anyagent},
-    branch_picker::pick_feature_branch,
-    task::{Task, TaskId},
+    branch_picker::{fallback_topic_name, pick_task_topic, topic_to_branch_slug},
+    task::{Task, TaskId, TaskWorkspaceKind},
     AgentEvent,
 };
 use state::{AppState, StateError};
@@ -307,35 +307,11 @@ async fn handle_request(
 }
 
 async fn create_environment(state: AppState, raw_name: &str) -> Result<AgentResponse, RpcError> {
-    let name = raw_name.trim();
-    if name.is_empty() {
-        return Err(RpcError::new(
-            StatusCode::BAD_REQUEST,
-            "Environment name cannot be empty",
-        ));
-    }
-    if !name
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err(RpcError::new(
-            StatusCode::BAD_REQUEST,
-            "Environment name can only contain letters, numbers, hyphens, and underscores",
-        ));
-    }
-
-    match state.create_new_environment(name).await {
-        Ok(environment) => Ok(AgentResponse::Environment { environment }),
-        Err(e) => {
-            let status = match e {
-                slopcoder_core::environment::EnvironmentError::AlreadyExists(_) => {
-                    StatusCode::CONFLICT
-                }
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            Err(RpcError::new(status, e.to_string()))
-        }
-    }
+    let _ = (state, raw_name);
+    Err(RpcError::new(
+        StatusCode::METHOD_NOT_ALLOWED,
+        "Environments are configured in environments.yaml; runtime creation is not supported",
+    ))
 }
 
 async fn list_branches(state: AppState, name: &str) -> Result<AgentResponse, RpcError> {
@@ -368,60 +344,72 @@ async fn create_task(
         ));
     };
 
-    let base_branch = req
-        .base_branch
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("main")
-        .to_string();
-
-    let feature_branch = match req
-        .feature_branch
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        Some(branch) => branch.to_string(),
+    let task_name = match req.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(name) => name.chars().take(20).collect::<String>(),
         None => {
             let model = state.get_branch_model().await;
-            match pick_feature_branch(&req.prompt, &model).await {
-                Ok(branch) => branch,
-                Err(_) => {
-                    return Err(RpcError::new(
-                        StatusCode::BAD_REQUEST,
-                        "You must enter the name of the feature branch.",
-                    ));
-                }
-            }
+            pick_task_topic(&req.prompt, &model)
+                .await
+                .unwrap_or_else(|_| fallback_topic_name(&req.prompt))
+                .chars()
+                .take(20)
+                .collect::<String>()
         }
     };
 
-    let worktree_path = match env
-        .create_worktree_from_base(&base_branch, &feature_branch)
-        .await
-    {
-        Ok(path) => path,
-        Err(e) => {
-            let status = match e {
-                slopcoder_core::environment::EnvironmentError::BranchExists(_)
-                | slopcoder_core::environment::EnvironmentError::WorktreeExists(_) => {
-                    StatusCode::CONFLICT
-                }
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            return Err(RpcError::new(
-                status,
-                format!("Failed to create worktree: {}", e),
-            ));
-        }
+    let (workspace_kind, base_branch, merge_branch, worktree_path) = if req.use_worktree {
+        let base_branch = env.current_branch().await.map_err(|e| {
+            RpcError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to resolve environment branch: {}", e),
+            )
+        })?;
+        let slug = topic_to_branch_slug(&task_name);
+        let suffix: String = Uuid::new_v4().to_string().chars().take(8).collect();
+        let merge_branch = format!("task/{}-{}", slug, suffix);
+        let worktrees_directory = state.get_worktrees_directory().await;
+        let worktree_path = match env
+            .create_worktree_from_base(&worktrees_directory, &base_branch, &merge_branch)
+            .await
+        {
+            Ok(path) => path,
+            Err(e) => {
+                let status = match e {
+                    slopcoder_core::environment::EnvironmentError::BranchExists(_)
+                    | slopcoder_core::environment::EnvironmentError::WorktreeExists(_) => {
+                        StatusCode::CONFLICT
+                    }
+                    _ => StatusCode::INTERNAL_SERVER_ERROR,
+                };
+                return Err(RpcError::new(
+                    status,
+                    format!("Failed to create worktree: {}", e),
+                ));
+            }
+        };
+
+        (
+            TaskWorkspaceKind::Worktree,
+            Some(base_branch),
+            Some(merge_branch),
+            worktree_path,
+        )
+    } else {
+        (
+            TaskWorkspaceKind::Environment,
+            None,
+            None,
+            env.directory.clone(),
+        )
     };
 
     let task = Task::new(
         req.agent.unwrap_or_default(),
         req.environment,
-        Some(base_branch),
-        feature_branch,
+        task_name,
+        workspace_kind,
+        base_branch,
+        merge_branch,
         worktree_path.clone(),
     );
     let task_id = task.id;
@@ -463,7 +451,7 @@ async fn send_prompt(
     if !state.validate_task_worktree(task_id).await {
         return Err(RpcError::new(
             StatusCode::GONE,
-            "Task worktree no longer exists (may have been removed from CLI)",
+            "Task workspace no longer exists (may have been removed from CLI)",
         ));
     }
 
@@ -511,15 +499,11 @@ async fn get_task_diff(state: AppState, task_id: TaskId) -> Result<AgentResponse
     let Some(task) = state.get_task(task_id).await else {
         return Err(RpcError::new(StatusCode::NOT_FOUND, "Task not found"));
     };
-    let Some(base_branch) = task.base_branch.as_deref() else {
-        return Err(RpcError::new(
-            StatusCode::BAD_REQUEST,
-            "Task has no base branch",
-        ));
-    };
-    let diff = load_git_diff(&task.worktree_path, base_branch)
+
+    let diff = load_git_diff(&task.worktree_path, task.base_branch.as_deref())
         .await
         .map_err(|e| RpcError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
     Ok(AgentResponse::TaskDiff {
         staged: diff.staged,
         unstaged: diff.unstaged,
@@ -531,6 +515,13 @@ async fn merge_task(state: AppState, task_id: TaskId) -> Result<AgentResponse, R
         return Err(RpcError::new(StatusCode::NOT_FOUND, "Task not found"));
     };
 
+    if task.workspace_kind != TaskWorkspaceKind::Worktree {
+        return Err(RpcError::new(
+            StatusCode::BAD_REQUEST,
+            "Only isolated worktree tasks can be merged",
+        ));
+    }
+
     if has_unstaged_changes(&task.worktree_path).await {
         return Err(RpcError::new(
             StatusCode::CONFLICT,
@@ -538,7 +529,13 @@ async fn merge_task(state: AppState, task_id: TaskId) -> Result<AgentResponse, R
         ));
     }
 
-    let base_branch = task.base_branch.as_deref().unwrap_or("main");
+    let merge_branch = task.merge_branch.as_deref().ok_or_else(|| {
+        RpcError::new(
+            StatusCode::BAD_REQUEST,
+            "Task has no merge branch; only worktree tasks are mergeable",
+        )
+    })?;
+
     let config = state.get_config().await;
     let Some(env) = config.find(&task.environment) else {
         return Err(RpcError::new(
@@ -547,44 +544,31 @@ async fn merge_task(state: AppState, task_id: TaskId) -> Result<AgentResponse, R
         ));
     };
 
-    let target_worktree = env.worktree_path(base_branch);
-    if target_worktree.exists() {
-        if has_unstaged_changes(&target_worktree).await {
-            return Err(RpcError::new(
-                StatusCode::CONFLICT,
-                format!(
-                    "Target branch '{}' worktree has unstaged changes.",
-                    base_branch
-                ),
-            ));
-        }
-    } else if let Err(e) = env.create_worktree(base_branch).await {
+    if has_unstaged_changes(&env.directory).await {
         return Err(RpcError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to create worktree for '{}': {}", base_branch, e),
+            StatusCode::CONFLICT,
+            "Environment repository has unstaged changes.",
         ));
     }
 
     let merge_output = Command::new("git")
-        .args(["merge", &task.feature_branch])
-        .current_dir(&target_worktree)
+        .args(["merge", merge_branch])
+        .current_dir(&env.directory)
         .output()
         .await
         .map_err(|e| RpcError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     if merge_output.status.success() {
+        let base = task.base_branch.as_deref().unwrap_or("current");
         Ok(AgentResponse::MergeResult {
             status: "merged".to_string(),
-            message: format!(
-                "Successfully merged {} into {}",
-                task.feature_branch, base_branch
-            ),
+            message: format!("Successfully merged {} into {}", merge_branch, base),
         })
     } else {
         let stdout = String::from_utf8_lossy(&merge_output.stdout);
         let _ = Command::new("git")
             .args(["merge", "--abort"])
-            .current_dir(&target_worktree)
+            .current_dir(&env.directory)
             .output()
             .await;
 
@@ -763,13 +747,14 @@ struct DiffResult {
 
 async fn load_git_diff(
     worktree_path: &Path,
-    base_branch: &str,
+    base_branch: Option<&str>,
 ) -> Result<DiffResult, std::io::Error> {
-    let staged_output = Command::new("git")
-        .args(["diff", "--cached", base_branch])
-        .current_dir(worktree_path)
-        .output()
-        .await?;
+    let mut staged_cmd = Command::new("git");
+    staged_cmd.args(["diff", "--cached"]);
+    if let Some(base_branch) = base_branch {
+        staged_cmd.arg(base_branch);
+    }
+    let staged_output = staged_cmd.current_dir(worktree_path).output().await?;
     if !staged_output.status.success() {
         let stderr = String::from_utf8_lossy(&staged_output.stderr);
         if !stderr.trim().is_empty() {
