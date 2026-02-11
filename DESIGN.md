@@ -122,6 +122,11 @@ Diff behavior:
 
 Coordinator routes live in `crates/slopcoder-server/src/routes.rs`.
 
+Coordinator request model:
+- Multi-host fan-out endpoints (environment/task listing and task lookup fallback) query hosts in parallel instead of serially.
+- Per-host coordinator RPC calls use bounded route-level timeouts to keep UI handlers responsive even when one host is slow.
+- Timed-out/disconnected pending RPC entries are explicitly cleaned up in coordinator state.
+
 Task creation payload:
 - `host`, `environment`, optional `name`, `use_worktree`, `prompt`, `agent`.
 

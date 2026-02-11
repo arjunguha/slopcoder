@@ -1,6 +1,7 @@
 //! HTTP routes for the Slopcoder coordinator API.
 
 use crate::state::{AppState, ConnectedAgent, RemoteError, StateError};
+use futures::future::join_all;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use slopcoder_core::{
@@ -12,6 +13,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 use warp::http::{Method, StatusCode};
 use warp::reject::InvalidQuery;
@@ -117,30 +119,26 @@ async fn list_environments(state: AppState) -> Result<impl Reply, Infallible> {
     let agents = state.list_agents().await;
     let mut environments = Vec::new();
 
-    for agent in agents {
-        match agent.request(AgentRequest::ListEnvironments).await {
+    let responses = join_all(agents.into_iter().map(|agent| async move {
+        let host = agent.host.clone();
+        let response = request_with_timeout(&agent, AgentRequest::ListEnvironments, 10).await;
+        (host, response)
+    }))
+    .await;
+
+    for (host, response) in responses {
+        match response {
             Ok(AgentResponse::Environments { environments: envs }) => {
                 for env in envs {
                     environments.push(EnvironmentResponse {
-                        host: agent.host.clone(),
+                        host: host.clone(),
                         name: env.name,
                         directory: env.directory.to_string_lossy().to_string(),
                     });
                 }
             }
-            Ok(_) => {
-                tracing::warn!(
-                    "Unexpected response for list environments from {}",
-                    agent.host
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to list environments from host '{}': {}",
-                    agent.host,
-                    e
-                );
-            }
+            Ok(_) => tracing::warn!("Unexpected response for list environments from {}", host),
+            Err(e) => tracing::warn!("Failed to list environments from host '{}': {}", host, e),
         }
     }
 
@@ -369,18 +367,25 @@ async fn list_tasks(state: AppState) -> Result<impl Reply, Infallible> {
     let agents = state.list_agents().await;
     let mut tasks = Vec::new();
 
-    for agent in agents {
-        match agent.request(AgentRequest::ListTasks).await {
+    let responses = join_all(agents.into_iter().map(|agent| async move {
+        let host = agent.host.clone();
+        let response = request_with_timeout(&agent, AgentRequest::ListTasks, 10).await;
+        (host, response)
+    }))
+    .await;
+
+    for (host, response) in responses {
+        match response {
             Ok(AgentResponse::Tasks { tasks: host_tasks }) => {
-                state.record_tasks_for_host(&agent.host, &host_tasks).await;
+                state.record_tasks_for_host(&host, &host_tasks).await;
                 tasks.extend(
                     host_tasks
                         .iter()
-                        .map(|task| TaskResponse::from_task(&agent.host, task)),
+                        .map(|task| TaskResponse::from_task(&host, task)),
                 );
             }
-            Ok(_) => tracing::warn!("Unexpected list_tasks response from {}", agent.host),
-            Err(e) => tracing::warn!("Failed to list tasks from '{}': {}", agent.host, e),
+            Ok(_) => tracing::warn!("Unexpected list_tasks response from {}", host),
+            Err(e) => tracing::warn!("Failed to list tasks from '{}': {}", host, e),
         }
     }
 
@@ -620,10 +625,16 @@ async fn resolve_agent_for_task(
     }
 
     let agents = state.list_agents().await;
-    for agent in agents {
-        let response = agent.request(AgentRequest::GetTask { task_id }).await;
+    let responses = join_all(agents.into_iter().map(|agent| async move {
+        let host = agent.host.clone();
+        let response = request_with_timeout(&agent, AgentRequest::GetTask { task_id }, 10).await;
+        (agent, host, response)
+    }))
+    .await;
+
+    for (agent, host, response) in responses {
         if let Ok(AgentResponse::Task { task: Some(_) }) = response {
-            state.set_task_host(task_id, agent.host.clone()).await;
+            state.set_task_host(task_id, host).await;
             return Ok(agent);
         }
     }
@@ -654,15 +665,22 @@ async fn find_task(
     }
 
     let agents = state.list_agents().await;
-    for agent in agents {
-        match agent.request(AgentRequest::GetTask { task_id }).await {
+    let responses = join_all(agents.into_iter().map(|agent| async move {
+        let host = agent.host.clone();
+        let response = request_with_timeout(&agent, AgentRequest::GetTask { task_id }, 10).await;
+        (host, response)
+    }))
+    .await;
+
+    for (host, response) in responses {
+        match response {
             Ok(AgentResponse::Task { task: Some(task) }) => {
-                state.set_task_host(task_id, agent.host.clone()).await;
-                return Ok(Some((agent.host, task)));
+                state.set_task_host(task_id, host.clone()).await;
+                return Ok(Some((host, task)));
             }
             Ok(AgentResponse::Task { task: None }) => {}
             Ok(_) => {}
-            Err(e) => tracing::warn!("Failed to query task {} on {}: {}", task_id, agent.host, e),
+            Err(e) => tracing::warn!("Failed to query task {} on {}: {}", task_id, host, e),
         }
     }
     Ok(None)
@@ -975,6 +993,17 @@ fn state_error_status(err: &StateError) -> StatusCode {
         StateError::RemoteError { status, .. } => {
             StatusCode::from_u16(*status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
         }
+    }
+}
+
+async fn request_with_timeout(
+    agent: &ConnectedAgent,
+    request: AgentRequest,
+    timeout_seconds: u64,
+) -> Result<AgentResponse, StateError> {
+    match timeout(Duration::from_secs(timeout_seconds), agent.request(request)).await {
+        Ok(result) => result,
+        Err(_) => Err(StateError::AgentTimeout),
     }
 }
 

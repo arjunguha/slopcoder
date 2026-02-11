@@ -75,10 +75,23 @@ impl ConnectedAgent {
             return Err(StateError::AgentDisconnected);
         }
 
-        let result = timeout(Duration::from_secs(120), rx)
-            .await
-            .map_err(|_| StateError::AgentTimeout)?
-            .map_err(|_| StateError::AgentDisconnected)?;
+        let result = match timeout(Duration::from_secs(120), rx).await {
+            Ok(result) => result,
+            Err(_) => {
+                let mut pending = self.pending.lock().await;
+                pending.remove(&request_id);
+                return Err(StateError::AgentTimeout);
+            }
+        };
+
+        let result = match result {
+            Ok(result) => result,
+            Err(_) => {
+                let mut pending = self.pending.lock().await;
+                pending.remove(&request_id);
+                return Err(StateError::AgentDisconnected);
+            }
+        };
 
         match result {
             Ok(response) => Ok(response),
