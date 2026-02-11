@@ -32,6 +32,12 @@ type RightMode =
 
 type RightTab = "conversation" | "diff";
 
+function basenameFromPath(path: string): string {
+  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const parts = normalized.split("/").filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : path;
+}
+
 function StatusBadge(props: { status: Task["status"] }) {
   const colors = {
     pending: "bg-gray-500",
@@ -342,7 +348,7 @@ function NewTaskPane(props: {
   onCreated: (taskId: string) => void;
 }) {
   const [taskName, setTaskName] = createSignal("");
-  const [useWorktree, setUseWorktree] = createSignal(true);
+  const [useWorktree, setUseWorktree] = createSignal(false);
   const [agent, setAgent] = createSignal<AgentKind>("codex");
   const [prompt, setPrompt] = createSignal("");
   const [loading, setLoading] = createSignal(false);
@@ -382,8 +388,11 @@ function NewTaskPane(props: {
           <div class="text-4xl font-extrabold tracking-tight text-gray-900 dark:text-gray-100">
             Let's Build
           </div>
-          <div class="text-sm text-gray-500 dark:text-gray-400 mt-2">
-            {props.host}/{props.environment}
+          <div class="text-sm text-gray-500 dark:text-gray-400 mt-2" title={props.environment}>
+            {props.host}:{basenameFromPath(props.environment)}
+          </div>
+          <div class="text-xs text-gray-400 dark:text-gray-500 mt-1 break-all" title={props.environment}>
+            {props.environment}
           </div>
         </div>
       </div>
@@ -549,6 +558,7 @@ export default function Workspace() {
                   <button
                     onClick={() => toggleEnvironment(environmentId)}
                     class="flex items-center gap-2 text-sm font-medium text-gray-800 dark:text-gray-200"
+                    title={env()?.directory || env()?.name || ""}
                   >
                     <span
                       class={`inline-block transition-transform ${
@@ -557,7 +567,7 @@ export default function Workspace() {
                     >
                       ▸
                     </span>
-                    {env()?.host}/{env()?.name}
+                    {env()?.host}:{basenameFromPath(env()?.directory || env()?.name || "")}
                   </button>
                   <button
                     onClick={() => {
@@ -566,7 +576,7 @@ export default function Workspace() {
                       setTab("conversation");
                     }}
                     class="rounded-md border border-gray-300 dark:border-gray-600 px-2 py-0.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-800"
-                    title={`Create task in ${env()?.host}/${env()?.name}`}
+                    title={`Create task in ${env()?.directory || env()?.name}`}
                   >
                     +
                   </button>

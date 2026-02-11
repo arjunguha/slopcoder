@@ -12,7 +12,7 @@ export default function NewTaskForm() {
   const [environments] = createResource(listEnvironments);
   const [selectedEnv, setSelectedEnv] = createSignal("");
   const [taskName, setTaskName] = createSignal("");
-  const [useWorktree, setUseWorktree] = createSignal(true);
+  const [useWorktree, setUseWorktree] = createSignal(false);
   const [prompt, setPrompt] = createSignal("");
   const [agent, setAgent] = createSignal<AgentKind>("codex");
   const [submitting, setSubmitting] = createSignal(false);
