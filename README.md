@@ -62,8 +62,8 @@ Start an agent (local or remote):
 slopagent environments.yaml --server ws://127.0.0.1:8080
 ```
 
-`slopagent` will prompt for the connection password in the terminal unless
-`--password` is supplied. You can override the host label shown in the UI:
+`slopagent` always prompts for the connection password in the terminal. You can
+override the host label shown in the UI:
 
 ```bash
 slopagent environments.yaml --server ws://127.0.0.1:8080 --name laptop-local

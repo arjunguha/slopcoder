@@ -50,7 +50,6 @@ async fn main() {
     let mut config_path: Option<PathBuf> = None;
     let mut server_url: Option<String> = None;
     let mut branch_model = "claude-haiku-4-5".to_string();
-    let mut provided_password: Option<String> = None;
     let mut host_override: Option<String> = None;
 
     while let Some(arg) = args.next() {
@@ -61,7 +60,12 @@ async fn main() {
                     branch_model = value;
                 }
             }
-            "--password" => provided_password = args.next(),
+            "--password" => {
+                tracing::error!(
+                    "--password is no longer supported for slopagent; use interactive prompt"
+                );
+                std::process::exit(1);
+            }
             "--name" | "--hostname" => host_override = args.next(),
             "--no-password" => {
                 tracing::error!(
@@ -71,7 +75,7 @@ async fn main() {
             }
             "-h" | "--help" => {
                 println!(
-                    "Usage: slopagent [config.yaml] --server ws://HOST:PORT [--name HOSTNAME] [--password VALUE] [--branch-model MODEL]\n\
+                    "Usage: slopagent [config.yaml] --server ws://HOST:PORT [--name HOSTNAME] [--branch-model MODEL]\n\
 Defaults: config=environments.yaml, branch-model=claude-haiku-4-5"
                 );
                 return;
@@ -98,11 +102,7 @@ Defaults: config=environments.yaml, branch-model=claude-haiku-4-5"
         }
     };
 
-    let password = if let Some(password) = provided_password {
-        Some(password)
-    } else {
-        prompt_password()
-    };
+    let password = prompt_password();
 
     if password.is_none() {
         tracing::error!("slopagent password is required");
