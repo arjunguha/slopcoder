@@ -463,10 +463,13 @@ function NewTaskPane(props: {
 
 function NewEnvironmentPane(props: {
   hosts: string[];
-  onCreated: (host: string, environment: string) => void;
+  onCreated: (taskId: string) => void;
 }) {
   const [host, setHost] = createSignal("");
   const [name, setName] = createSignal("");
+  const [agent, setAgent] = createSignal<AgentKind>("codex");
+  const [prompt, setPrompt] = createSignal("");
+  const [useWorktree, setUseWorktree] = createSignal(false);
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal("");
 
@@ -478,7 +481,7 @@ function NewEnvironmentPane(props: {
 
   const submit = async (e: Event) => {
     e.preventDefault();
-    if (!host().trim() || !name().trim()) return;
+    if (!host().trim() || !name().trim() || !prompt().trim()) return;
     setLoading(true);
     setError("");
     try {
@@ -486,8 +489,16 @@ function NewEnvironmentPane(props: {
         host: host().trim(),
         name: name().trim(),
       });
-      props.onCreated(env.host, env.name);
+      const task = await createTask({
+        host: env.host,
+        environment: env.name,
+        prompt: prompt(),
+        use_worktree: useWorktree(),
+        agent: agent(),
+      });
+      props.onCreated(task.id);
       setName("");
+      setPrompt("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create environment");
     } finally {
@@ -496,53 +507,76 @@ function NewEnvironmentPane(props: {
   };
 
   return (
-    <form onSubmit={submit} class="h-full flex items-center justify-center">
-      <div class="w-full max-w-xl rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-5 space-y-4">
-        <div>
-          <div class="text-xl font-bold text-gray-900 dark:text-gray-100">Create Environment</div>
-          <div class="text-sm text-gray-500 dark:text-gray-400">
-            Creates a repository under the host environment root (default `~/slop/&lt;name&gt;`).
+    <form onSubmit={submit} class="h-full flex flex-col min-h-0">
+      <div class="flex-1 min-h-0 flex items-center justify-center">
+        <div class="text-center">
+          <div class="text-4xl font-extrabold tracking-tight text-gray-900 dark:text-gray-100">
+            Let's Build
+          </div>
+          <div class="text-sm text-gray-500 dark:text-gray-400 mt-2">
+            Create a new environment and kick off the first task immediately.
           </div>
         </div>
-        <div class="grid gap-3 md:grid-cols-2">
-          <div>
-            <label class="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
-              Host
-            </label>
-            <input
-              list="hosts-list"
-              value={host()}
-              onInput={(e) => setHost(e.currentTarget.value)}
-              placeholder="host name"
-              class="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
-            />
-            <datalist id="hosts-list">
-              <For each={props.hosts}>{(host) => <option value={host} />}</For>
-            </datalist>
-          </div>
-          <div>
-            <label class="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
-              Environment Name
-            </label>
-            <input
-              value={name()}
-              onInput={(e) => setName(e.currentTarget.value)}
-              placeholder="my-project"
-              class="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
-            />
-          </div>
+      </div>
+
+      <div class="mt-4">
+        <div class="grid gap-3 md:grid-cols-2 mb-3">
+          <input
+            list="hosts-list"
+            value={host()}
+            onInput={(e) => setHost(e.currentTarget.value)}
+            placeholder="Host"
+            class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+          />
+          <datalist id="hosts-list">
+            <For each={props.hosts}>{(host) => <option value={host} />}</For>
+          </datalist>
+          <input
+            value={name()}
+            onInput={(e) => setName(e.currentTarget.value)}
+            placeholder="Environment name"
+            class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+          />
         </div>
-        <div class="flex items-center justify-end gap-2">
+        <div class="grid gap-3 md:grid-cols-2 mb-3">
+          <select
+            value={agent()}
+            onChange={(e) => setAgent(e.currentTarget.value as AgentKind)}
+            class="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+          >
+            <option value="codex">Codex</option>
+            <option value="claude">Claude</option>
+            <option value="cursor">Cursor</option>
+            <option value="gemini">Gemini</option>
+            <option value="opencode">OpenCode</option>
+          </select>
+          <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <input
+              type="checkbox"
+              checked={useWorktree()}
+              onChange={(e) => setUseWorktree(e.currentTarget.checked)}
+            />
+            Run task in isolated worktree
+          </label>
+        </div>
+        <textarea
+          rows={4}
+          value={prompt()}
+          onInput={(e) => setPrompt(e.currentTarget.value)}
+          placeholder="Initial prompt for the first task..."
+          class="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+        />
+        <div class="mt-3 flex justify-end">
           <button
             type="submit"
-            disabled={loading() || !host().trim() || !name().trim()}
+            disabled={loading() || !host().trim() || !name().trim() || !prompt().trim()}
             class="rounded-lg bg-blue-600 px-5 py-2 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading() ? "Creating..." : "Create Environment"}
+            {loading() ? "Creating..." : "Create Environment + Start Task"}
           </button>
         </div>
         <Show when={error()}>
-          <div class="text-sm text-red-600 dark:text-red-400">{error()}</div>
+          <div class="mt-2 text-sm text-red-600 dark:text-red-400">{error()}</div>
         </Show>
       </div>
     </form>
@@ -831,9 +865,10 @@ export default function Workspace() {
             <Show when={mode().kind === "new-environment"}>
               <NewEnvironmentPane
                 hosts={hostIds()}
-                onCreated={(host, environment) => {
+                onCreated={(taskId) => {
                   refetchEnvironments();
-                  setMode({ kind: "new-task", host, environment });
+                  refetchTasks();
+                  setMode({ kind: "task", taskId });
                   setTab("conversation");
                 }}
               />

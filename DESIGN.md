@@ -135,6 +135,7 @@ Environment creation via API:
 - UI provides host + environment name only.
 - Agent creates `<environments_root>/<name>`, initializes a Git repository, and makes an empty initial commit.
 - Created/discovered environments are listed immediately without writing to `environments.yaml`.
+- The create-environment screen also captures an initial prompt and immediately creates the first task in the new environment.
 
 ## 8. Frontend Model
 
@@ -144,6 +145,7 @@ Behavior:
 - Environment list maps directly to configured repository directory entries.
 - Environment list also includes repositories auto-discovered under `environments_root`.
 - "Create Environment" button appears above the list and opens a host+name form.
+- The create-environment form uses the same centered "Let's Build" visual style and starts the first task immediately after environment creation.
 - New task form no longer asks for base/feature branch.
 - User can toggle `Run task in isolated worktree (mergeable)`.
 - Task list and task header display task `name` (topic).
