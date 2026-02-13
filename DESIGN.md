@@ -154,7 +154,7 @@ Behavior:
 - The create-environment form uses the same centered "Let's Build" visual style and starts the first task immediately after environment creation.
 - New task form no longer asks for base/feature branch.
 - User can toggle `Run task in isolated worktree (mergeable)`.
-- User can toggle `Enable web search` during task creation.
+- `Enable web search` is shown only when the selected agent supports it.
 - `web_search` is currently wired to Codex (`--search`) and ignored for other agents.
 - Task list and task header display task `name` (topic).
 - Merge controls are shown only for `worktree` tasks.

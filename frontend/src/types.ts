@@ -102,6 +102,10 @@ export interface UsageStats {
 
 export type AgentKind = "codex" | "claude" | "cursor" | "opencode" | "gemini";
 
+export function agentSupportsWebSearch(agent: AgentKind): boolean {
+  return agent === "codex";
+}
+
 export type AgentEvent =
   | { type: "session.started"; session_id: string }
   | { type: "turn.started" }

@@ -21,7 +21,13 @@ import {
   getTaskDiff,
   mergeTask,
 } from "../api/client";
-import type { AgentEvent, AgentKind, CompletedItem, Task } from "../types";
+import {
+  agentSupportsWebSearch,
+  type AgentEvent,
+  type AgentKind,
+  type CompletedItem,
+  type Task,
+} from "../types";
 import { DiffViewer } from "./DiffViewer";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
@@ -365,6 +371,7 @@ function NewTaskPane(props: {
   const [prompt, setPrompt] = createSignal("");
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal("");
+  const searchSupported = () => agentSupportsWebSearch(agent());
 
   let promptRef: HTMLTextAreaElement | undefined;
   createEffect(() => {
@@ -383,7 +390,7 @@ function NewTaskPane(props: {
         prompt: prompt(),
         name: taskName().trim() || undefined,
         use_worktree: useWorktree(),
-        web_search: webSearch(),
+        web_search: searchSupported() && webSearch(),
         agent: agent(),
       });
       props.onCreated(task.id);
@@ -438,14 +445,16 @@ function NewTaskPane(props: {
           />
           Run task in isolated worktree (mergeable)
         </label>
-        <label class="mb-3 flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-          <input
-            type="checkbox"
-            checked={webSearch()}
-            onChange={(e) => setWebSearch(e.currentTarget.checked)}
-          />
-          Enable web search (Codex)
-        </label>
+        <Show when={searchSupported()}>
+          <label class="mb-3 flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <input
+              type="checkbox"
+              checked={webSearch()}
+              onChange={(e) => setWebSearch(e.currentTarget.checked)}
+            />
+            Enable web search
+          </label>
+        </Show>
         <textarea
           ref={promptRef}
           rows={4}
@@ -483,6 +492,7 @@ function NewEnvironmentPane(props: {
   const [webSearch, setWebSearch] = createSignal(false);
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal("");
+  const searchSupported = () => agentSupportsWebSearch(agent());
 
   createEffect(() => {
     if (!host() && props.hosts.length > 0) {
@@ -505,7 +515,7 @@ function NewEnvironmentPane(props: {
         environment: env.name,
         prompt: prompt(),
         use_worktree: useWorktree(),
-        web_search: webSearch(),
+        web_search: searchSupported() && webSearch(),
         agent: agent(),
       });
       props.onCreated(task.id);
@@ -570,14 +580,16 @@ function NewEnvironmentPane(props: {
             />
             Run task in isolated worktree
           </label>
-          <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-            <input
-              type="checkbox"
-              checked={webSearch()}
-              onChange={(e) => setWebSearch(e.currentTarget.checked)}
-            />
-            Enable web search (Codex)
-          </label>
+          <Show when={searchSupported()}>
+            <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+              <input
+                type="checkbox"
+                checked={webSearch()}
+                onChange={(e) => setWebSearch(e.currentTarget.checked)}
+              />
+              Enable web search
+            </label>
+          </Show>
         </div>
         <textarea
           rows={4}

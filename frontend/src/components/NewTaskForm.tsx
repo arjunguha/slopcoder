@@ -4,7 +4,7 @@ import {
   listEnvironments,
   createTask,
 } from "../api/client";
-import type { AgentKind } from "../types";
+import { agentSupportsWebSearch, type AgentKind } from "../types";
 
 export default function NewTaskForm() {
   const navigate = useNavigate();
@@ -43,7 +43,7 @@ export default function NewTaskForm() {
         environment: selected.env,
         name: taskName().trim() || undefined,
         use_worktree: useWorktree(),
-        web_search: webSearch(),
+        web_search: agentSupportsWebSearch(agent()) && webSearch(),
         prompt: prompt(),
         agent: agent(),
       });
@@ -58,6 +58,7 @@ export default function NewTaskForm() {
   const isValid = () => {
     return selectedEnvParts() && prompt().trim();
   };
+  const searchSupported = () => agentSupportsWebSearch(agent());
 
   const inputClass = "w-full px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-400 dark:placeholder-gray-500";
 
@@ -130,14 +131,16 @@ export default function NewTaskForm() {
           />
           Run in isolated worktree (mergeable)
         </label>
-        <label class="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
-          <input
-            type="checkbox"
-            checked={webSearch()}
-            onChange={(e) => setWebSearch(e.currentTarget.checked)}
-          />
-          Enable web search (Codex)
-        </label>
+        <Show when={searchSupported()}>
+          <label class="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+            <input
+              type="checkbox"
+              checked={webSearch()}
+              onChange={(e) => setWebSearch(e.currentTarget.checked)}
+            />
+            Enable web search
+          </label>
+        </Show>
 
         <div>
           <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
