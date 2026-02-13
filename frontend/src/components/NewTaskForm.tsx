@@ -13,6 +13,7 @@ export default function NewTaskForm() {
   const [selectedEnv, setSelectedEnv] = createSignal("");
   const [taskName, setTaskName] = createSignal("");
   const [useWorktree, setUseWorktree] = createSignal(false);
+  const [webSearch, setWebSearch] = createSignal(false);
   const [prompt, setPrompt] = createSignal("");
   const [agent, setAgent] = createSignal<AgentKind>("codex");
   const [submitting, setSubmitting] = createSignal(false);
@@ -42,6 +43,7 @@ export default function NewTaskForm() {
         environment: selected.env,
         name: taskName().trim() || undefined,
         use_worktree: useWorktree(),
+        web_search: webSearch(),
         prompt: prompt(),
         agent: agent(),
       });
@@ -127,6 +129,14 @@ export default function NewTaskForm() {
             onChange={(e) => setUseWorktree(e.currentTarget.checked)}
           />
           Run in isolated worktree (mergeable)
+        </label>
+        <label class="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+          <input
+            type="checkbox"
+            checked={webSearch()}
+            onChange={(e) => setWebSearch(e.currentTarget.checked)}
+          />
+          Enable web search (Codex)
         </label>
 
         <div>

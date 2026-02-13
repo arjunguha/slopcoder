@@ -26,6 +26,7 @@ impl GeminiAgent {
         config: &GeminiAgentConfig,
         working_dir: &Path,
         prompt: &str,
+        _web_search: bool,
     ) -> Result<Self, AgentError> {
         let mut cmd = Command::new(&config.gemini_path);
 
@@ -69,6 +70,7 @@ impl GeminiAgent {
         working_dir: &Path,
         session_id: Uuid,
         prompt: &str,
+        _web_search: bool,
     ) -> Result<Self, AgentError> {
         let mut cmd = Command::new(&config.gemini_path);
 

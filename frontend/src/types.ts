@@ -49,6 +49,7 @@ export interface CreateTaskRequest {
   environment: string;
   name?: string;
   use_worktree?: boolean;
+  web_search?: boolean;
   prompt: string;
   agent: AgentKind;
 }

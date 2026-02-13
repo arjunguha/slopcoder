@@ -204,26 +204,28 @@ pub async fn spawn_anyagent(
     config: &AnyAgentConfig,
     working_dir: &Path,
     prompt: &str,
+    web_search: bool,
 ) -> Result<Box<dyn AnyAgent>, AgentError> {
     match kind {
         AgentKind::Codex => {
-            let agent = CodexAgent::spawn(&config.codex, working_dir, prompt).await?;
+            let agent = CodexAgent::spawn(&config.codex, working_dir, prompt, web_search).await?;
             Ok(Box::new(agent))
         }
         AgentKind::Claude => {
-            let agent = ClaudeAgent::spawn(&config.claude, working_dir, prompt).await?;
+            let agent = ClaudeAgent::spawn(&config.claude, working_dir, prompt, web_search).await?;
             Ok(Box::new(agent))
         }
         AgentKind::Cursor => {
-            let agent = CursorAgent::spawn(&config.cursor, working_dir, prompt).await?;
+            let agent = CursorAgent::spawn(&config.cursor, working_dir, prompt, web_search).await?;
             Ok(Box::new(agent))
         }
         AgentKind::Opencode => {
-            let agent = OpencodeAgent::spawn(&config.opencode, working_dir, prompt).await?;
+            let agent =
+                OpencodeAgent::spawn(&config.opencode, working_dir, prompt, web_search).await?;
             Ok(Box::new(agent))
         }
         AgentKind::Gemini => {
-            let agent = GeminiAgent::spawn(&config.gemini, working_dir, prompt).await?;
+            let agent = GeminiAgent::spawn(&config.gemini, working_dir, prompt, web_search).await?;
             Ok(Box::new(agent))
         }
     }
@@ -236,30 +238,42 @@ pub async fn resume_anyagent(
     working_dir: &Path,
     session_id: Uuid,
     prompt: &str,
+    web_search: bool,
 ) -> Result<Box<dyn AnyAgent>, AgentError> {
     match kind {
         AgentKind::Codex => {
-            let agent = CodexAgent::resume(&config.codex, working_dir, session_id, prompt).await?;
+            let agent =
+                CodexAgent::resume(&config.codex, working_dir, session_id, prompt, web_search)
+                    .await?;
             Ok(Box::new(agent))
         }
         AgentKind::Claude => {
             let agent =
-                ClaudeAgent::resume(&config.claude, working_dir, session_id, prompt).await?;
+                ClaudeAgent::resume(&config.claude, working_dir, session_id, prompt, web_search)
+                    .await?;
             Ok(Box::new(agent))
         }
         AgentKind::Cursor => {
             let agent =
-                CursorAgent::resume(&config.cursor, working_dir, session_id, prompt).await?;
+                CursorAgent::resume(&config.cursor, working_dir, session_id, prompt, web_search)
+                    .await?;
             Ok(Box::new(agent))
         }
         AgentKind::Opencode => {
-            let agent =
-                OpencodeAgent::resume(&config.opencode, working_dir, session_id, prompt).await?;
+            let agent = OpencodeAgent::resume(
+                &config.opencode,
+                working_dir,
+                session_id,
+                prompt,
+                web_search,
+            )
+            .await?;
             Ok(Box::new(agent))
         }
         AgentKind::Gemini => {
             let agent =
-                GeminiAgent::resume(&config.gemini, working_dir, session_id, prompt).await?;
+                GeminiAgent::resume(&config.gemini, working_dir, session_id, prompt, web_search)
+                    .await?;
             Ok(Box::new(agent))
         }
     }

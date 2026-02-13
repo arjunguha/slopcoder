@@ -26,6 +26,7 @@ impl CodexAgent {
         config: &CodexAgentConfig,
         working_dir: &Path,
         prompt: &str,
+        web_search: bool,
     ) -> Result<Self, AgentError> {
         let mut cmd = Command::new(&config.codex_path);
 
@@ -37,6 +38,9 @@ impl CodexAgent {
 
         if let Some(model) = &config.model {
             cmd.arg("-m").arg(model);
+        }
+        if web_search {
+            cmd.arg("--search");
         }
 
         for arg in &config.extra_args {
@@ -67,6 +71,7 @@ impl CodexAgent {
         working_dir: &Path,
         session_id: Uuid,
         prompt: &str,
+        web_search: bool,
     ) -> Result<Self, AgentError> {
         let mut cmd = Command::new(&config.codex_path);
 
@@ -78,6 +83,9 @@ impl CodexAgent {
 
         if let Some(model) = &config.model {
             cmd.arg("-m").arg(model);
+        }
+        if web_search {
+            cmd.arg("--search");
         }
 
         for arg in &config.extra_args {

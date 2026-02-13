@@ -26,6 +26,7 @@ impl CursorAgent {
         config: &CursorAgentConfig,
         working_dir: &Path,
         prompt: &str,
+        _web_search: bool,
     ) -> Result<Self, AgentError> {
         let mut cmd = Command::new(&config.cursor_path);
 
@@ -67,6 +68,7 @@ impl CursorAgent {
         working_dir: &Path,
         session_id: Uuid,
         prompt: &str,
+        _web_search: bool,
     ) -> Result<Self, AgentError> {
         let mut cmd = Command::new(&config.cursor_path);
 

@@ -26,6 +26,7 @@ impl ClaudeAgent {
         config: &ClaudeAgentConfig,
         working_dir: &Path,
         prompt: &str,
+        _web_search: bool,
     ) -> Result<Self, AgentError> {
         let mut cmd = Command::new(&config.claude_path);
 
@@ -68,6 +69,7 @@ impl ClaudeAgent {
         working_dir: &Path,
         session_id: Uuid,
         prompt: &str,
+        _web_search: bool,
     ) -> Result<Self, AgentError> {
         let mut cmd = Command::new(&config.claude_path);
 

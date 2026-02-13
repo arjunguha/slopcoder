@@ -315,6 +315,7 @@ mod tests {
             workspace_kind: crate::task::TaskWorkspaceKind::Worktree,
             base_branch: base_branch.map(|b| b.to_string()),
             merge_branch: Some(merge_branch.to_string()),
+            web_search: false,
             worktree_path: worktree,
             status: TaskStatus::Completed,
             session_id: None,

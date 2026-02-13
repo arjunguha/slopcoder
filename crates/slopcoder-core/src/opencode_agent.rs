@@ -34,6 +34,7 @@ impl OpencodeAgent {
         config: &OpencodeAgentConfig,
         working_dir: &Path,
         prompt: &str,
+        _web_search: bool,
     ) -> Result<Self, AgentError> {
         let mut cmd = Command::new(&config.opencode_path);
 
@@ -74,6 +75,7 @@ impl OpencodeAgent {
         working_dir: &Path,
         session_id: Uuid,
         prompt: &str,
+        _web_search: bool,
     ) -> Result<Self, AgentError> {
         // Look up the original session string from the mapping file
         let session_string = Self::load_session_string(working_dir, &session_id).await?;

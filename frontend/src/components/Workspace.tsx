@@ -360,6 +360,7 @@ function NewTaskPane(props: {
 }) {
   const [taskName, setTaskName] = createSignal("");
   const [useWorktree, setUseWorktree] = createSignal(false);
+  const [webSearch, setWebSearch] = createSignal(false);
   const [agent, setAgent] = createSignal<AgentKind>("codex");
   const [prompt, setPrompt] = createSignal("");
   const [loading, setLoading] = createSignal(false);
@@ -382,6 +383,7 @@ function NewTaskPane(props: {
         prompt: prompt(),
         name: taskName().trim() || undefined,
         use_worktree: useWorktree(),
+        web_search: webSearch(),
         agent: agent(),
       });
       props.onCreated(task.id);
@@ -436,6 +438,14 @@ function NewTaskPane(props: {
           />
           Run task in isolated worktree (mergeable)
         </label>
+        <label class="mb-3 flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+          <input
+            type="checkbox"
+            checked={webSearch()}
+            onChange={(e) => setWebSearch(e.currentTarget.checked)}
+          />
+          Enable web search (Codex)
+        </label>
         <textarea
           ref={promptRef}
           rows={4}
@@ -470,6 +480,7 @@ function NewEnvironmentPane(props: {
   const [agent, setAgent] = createSignal<AgentKind>("codex");
   const [prompt, setPrompt] = createSignal("");
   const [useWorktree, setUseWorktree] = createSignal(false);
+  const [webSearch, setWebSearch] = createSignal(false);
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal("");
 
@@ -494,6 +505,7 @@ function NewEnvironmentPane(props: {
         environment: env.name,
         prompt: prompt(),
         use_worktree: useWorktree(),
+        web_search: webSearch(),
         agent: agent(),
       });
       props.onCreated(task.id);
@@ -557,6 +569,14 @@ function NewEnvironmentPane(props: {
               onChange={(e) => setUseWorktree(e.currentTarget.checked)}
             />
             Run task in isolated worktree
+          </label>
+          <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <input
+              type="checkbox"
+              checked={webSearch()}
+              onChange={(e) => setWebSearch(e.currentTarget.checked)}
+            />
+            Enable web search (Codex)
           </label>
         </div>
         <textarea

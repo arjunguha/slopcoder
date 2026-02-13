@@ -417,6 +417,8 @@ struct CreateTaskRequest {
     name: Option<String>,
     #[serde(default)]
     use_worktree: bool,
+    #[serde(default)]
+    web_search: bool,
     prompt: String,
     #[serde(default)]
     agent: Option<slopcoder_core::anyagent::AgentKind>,
@@ -447,6 +449,7 @@ async fn create_task(req: CreateTaskRequest, state: AppState) -> Result<impl Rep
         environment: req.environment,
         name: req.name,
         use_worktree: req.use_worktree,
+        web_search: req.web_search,
         prompt: req.prompt,
         agent: req.agent,
     };

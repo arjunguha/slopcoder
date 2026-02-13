@@ -4,7 +4,7 @@ use futures::{SinkExt, StreamExt};
 use http::StatusCode;
 use slopcoder_core::{
     agent_rpc::{AgentCreateTaskRequest, AgentEnvelope, AgentRequest, AgentResponse},
-    anyagent::{resume_anyagent, spawn_anyagent},
+    anyagent::{resume_anyagent, spawn_anyagent, AgentKind},
     branch_picker::{fallback_topic_name, pick_task_topic, topic_to_branch_slug},
     task::{Task, TaskId, TaskWorkspaceKind},
     AgentEvent,
@@ -420,6 +420,7 @@ async fn create_task(
         workspace_kind,
         base_branch,
         merge_branch,
+        req.web_search,
         worktree_path.clone(),
     );
     let task_id = task.id;
@@ -629,6 +630,13 @@ async fn run_agent(
 
     let mut interrupt_rx = state.register_interrupt_channel(task_id).await;
     let agent_config = state.get_agent_config().await;
+    if task.web_search && task.agent != AgentKind::Codex {
+        tracing::warn!(
+            "Task {} requested web search, but '{}' does not currently support it in slopcoder",
+            task_id,
+            format!("{:?}", task.agent).to_lowercase()
+        );
+    }
 
     let prompt_event = AgentEvent::PromptSent {
         prompt: prompt.clone(),
@@ -648,9 +656,24 @@ async fn run_agent(
     });
 
     let agent_result = if let Some(sid) = session_id {
-        resume_anyagent(task.agent, &agent_config, &task.worktree_path, sid, &prompt).await
+        resume_anyagent(
+            task.agent,
+            &agent_config,
+            &task.worktree_path,
+            sid,
+            &prompt,
+            task.web_search,
+        )
+        .await
     } else {
-        spawn_anyagent(task.agent, &agent_config, &task.worktree_path, &prompt).await
+        spawn_anyagent(
+            task.agent,
+            &agent_config,
+            &task.worktree_path,
+            &prompt,
+            task.web_search,
+        )
+        .await
     };
 
     let mut agent = match agent_result {

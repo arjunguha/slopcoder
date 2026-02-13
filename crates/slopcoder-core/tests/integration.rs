@@ -136,6 +136,7 @@ async fn run_agent_hello_world(kind: AgentKind) {
         &config,
         &worktree_path,
         "Create a file called hello.txt containing the text 'Hello, World!'",
+        false,
     )
     .await
     .expect("Should spawn agent");
@@ -190,6 +191,7 @@ async fn run_agent_resume(kind: AgentKind) {
         &config,
         &worktree_path,
         "Create a file called hello.txt containing 'Hello, World!'",
+        false,
     )
     .await
     .expect("Should spawn agent");
@@ -208,6 +210,7 @@ async fn run_agent_resume(kind: AgentKind) {
         &worktree_path,
         session_id,
         "Change hello.txt to say 'Goodbye, World!' instead",
+        false,
     )
     .await
     .expect("Should resume agent");
@@ -267,6 +270,7 @@ async fn test_task_with_environment() {
         TaskWorkspaceKind::Worktree,
         Some("main".to_string()),
         Some("task/test-task".to_string()),
+        false,
         worktree_path.clone(),
     );
 
@@ -315,6 +319,7 @@ async fn run_agent_interrupt(kind: AgentKind) {
         &config,
         &worktree_path,
         "Write a very long story to story.txt. Make it at least 10 paragraphs.",
+        false,
     )
     .await
     .expect("Should spawn agent");
@@ -375,6 +380,7 @@ async fn run_agent_resume_after_interrupt(kind: AgentKind) {
         &config,
         &worktree_path,
         "Create a file called test.txt with 'First attempt'",
+        false,
     )
     .await
     .expect("Should spawn agent");
@@ -403,6 +409,7 @@ async fn run_agent_resume_after_interrupt(kind: AgentKind) {
         &worktree_path,
         session_id,
         "Now create a file called complete.txt with 'Completed after interrupt'",
+        false,
     )
     .await
     .expect("Should resume agent");
@@ -447,6 +454,7 @@ async fn run_agent_double_interrupt(kind: AgentKind) {
         &config,
         &worktree_path,
         "Create first.txt with 'First attempt'",
+        false,
     )
     .await
     .expect("Should spawn agent");
@@ -472,6 +480,7 @@ async fn run_agent_double_interrupt(kind: AgentKind) {
         &worktree_path,
         session_id,
         "Create second.txt with 'Second attempt'",
+        false,
     )
     .await
     .expect("Should resume agent");
@@ -491,6 +500,7 @@ async fn run_agent_double_interrupt(kind: AgentKind) {
         &worktree_path,
         session_id,
         "Create final.txt with 'Final success'",
+        false,
     )
     .await
     .expect("Should resume agent");
@@ -595,6 +605,7 @@ async fn run_opencode_hello_world() {
         &config,
         &worktree_path,
         "Create a file called hello.txt containing the text 'Hello, World!'",
+        false,
     )
     .await
     .expect("Should spawn agent");
@@ -638,9 +649,15 @@ async fn run_opencode_resume() {
 
     let config = AnyAgentConfig::default();
 
-    let mut agent = spawn_anyagent(AgentKind::Opencode, &config, &worktree_path, "What is 2+2?")
-        .await
-        .expect("Should spawn agent");
+    let mut agent = spawn_anyagent(
+        AgentKind::Opencode,
+        &config,
+        &worktree_path,
+        "What is 2+2?",
+        false,
+    )
+    .await
+    .expect("Should spawn agent");
 
     while agent.next_event().await.is_some() {}
 
@@ -657,6 +674,7 @@ async fn run_opencode_resume() {
         &worktree_path,
         session_id,
         "What is 3+3?",
+        false,
     )
     .await
     .expect("Should resume agent");

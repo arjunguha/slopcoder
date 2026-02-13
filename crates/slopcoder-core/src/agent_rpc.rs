@@ -79,6 +79,8 @@ pub struct AgentCreateTaskRequest {
     pub name: Option<String>,
     #[serde(default)]
     pub use_worktree: bool,
+    #[serde(default)]
+    pub web_search: bool,
     pub prompt: String,
     #[serde(default)]
     pub agent: Option<AgentKind>,

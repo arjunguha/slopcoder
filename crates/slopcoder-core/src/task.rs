@@ -113,6 +113,9 @@ pub struct Task {
     /// Branch used for merge when task runs in an isolated worktree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge_branch: Option<String>,
+    /// Whether web search is enabled for this task.
+    #[serde(default)]
+    pub web_search: bool,
     /// Path to the task workspace directory.
     pub worktree_path: PathBuf,
     /// Current status of the task.
@@ -134,6 +137,7 @@ impl Task {
         workspace_kind: TaskWorkspaceKind,
         base_branch: Option<String>,
         merge_branch: Option<String>,
+        web_search: bool,
         worktree_path: PathBuf,
     ) -> Self {
         Self {
@@ -144,6 +148,7 @@ impl Task {
             workspace_kind,
             base_branch,
             merge_branch,
+            web_search,
             worktree_path,
             status: TaskStatus::Pending,
             session_id: None,
@@ -260,6 +265,7 @@ mod tests {
             TaskWorkspaceKind::Worktree,
             Some("main".to_string()),
             Some("task/login-fixes".to_string()),
+            false,
             PathBuf::from("/tmp/worktree"),
         );
 
@@ -282,6 +288,7 @@ mod tests {
             TaskWorkspaceKind::Environment,
             None,
             None,
+            false,
             PathBuf::from("/tmp"),
         );
 
@@ -311,6 +318,7 @@ mod tests {
             TaskWorkspaceKind::Environment,
             None,
             None,
+            false,
             PathBuf::from("/tmp/1"),
         );
         let task2 = Task::new(
@@ -320,6 +328,7 @@ mod tests {
             TaskWorkspaceKind::Worktree,
             Some("main".to_string()),
             Some("task/topic-two".to_string()),
+            false,
             PathBuf::from("/tmp/2"),
         );
 
@@ -345,6 +354,7 @@ mod tests {
             TaskWorkspaceKind::Environment,
             None,
             None,
+            false,
             PathBuf::from("/tmp"),
         );
 
@@ -369,6 +379,7 @@ mod tests {
             TaskWorkspaceKind::Environment,
             None,
             None,
+            false,
             PathBuf::from("/tmp"),
         );
 
@@ -397,6 +408,7 @@ mod tests {
             TaskWorkspaceKind::Environment,
             None,
             None,
+            false,
             PathBuf::from("/tmp"),
         );
 

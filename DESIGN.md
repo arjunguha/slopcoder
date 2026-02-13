@@ -50,6 +50,7 @@ Task fields:
 - `id`, `agent`, `environment`, `name`, `worktree_path`, `status`, `session_id`, `created_at`, `history`.
 - `workspace_kind`: `environment` or `worktree`.
 - `base_branch` and `merge_branch` are set only for `worktree` tasks.
+- `web_search`: task-level boolean persisted with the task and reused on prompt resumes.
 
 Task behavior:
 - Every task runs in exactly one directory (`worktree_path`).
@@ -128,7 +129,7 @@ Coordinator request model:
 - Timed-out/disconnected pending RPC entries are explicitly cleaned up in coordinator state.
 
 Task creation payload:
-- `host`, `environment`, optional `name`, `use_worktree`, `prompt`, `agent`.
+- `host`, `environment`, optional `name`, `use_worktree`, `web_search`, `prompt`, `agent`.
 
 Task response payload now includes:
 - `name`
@@ -153,6 +154,8 @@ Behavior:
 - The create-environment form uses the same centered "Let's Build" visual style and starts the first task immediately after environment creation.
 - New task form no longer asks for base/feature branch.
 - User can toggle `Run task in isolated worktree (mergeable)`.
+- User can toggle `Enable web search` during task creation.
+- `web_search` is currently wired to Codex (`--search`) and ignored for other agents.
 - Task list and task header display task `name` (topic).
 - Merge controls are shown only for `worktree` tasks.
 
