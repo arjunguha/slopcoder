@@ -149,6 +149,14 @@ export default function NewTaskForm() {
           <textarea
             value={prompt()}
             onInput={(e) => setPrompt(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                e.preventDefault();
+                if (!submitting() && isValid()) {
+                  void handleSubmit(new Event("submit"));
+                }
+              }
+            }}
             placeholder="Describe what you want the agent to do..."
             rows={6}
             class={`${inputClass} resize-none`}

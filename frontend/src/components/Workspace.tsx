@@ -188,20 +188,42 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab; hideDiff?:
   const [merging, setMerging] = createSignal(false);
   const [error, setError] = createSignal("");
   const [mergeMessage, setMergeMessage] = createSignal<{ type: "success" | "error"; text: string } | null>(null);
+  const [pendingInitialScroll, setPendingInitialScroll] = createSignal(true);
+  const taskStatus = createMemo(() => taskData()?.status ?? "pending");
 
   let outputRef: HTMLDivElement | undefined;
   let promptRef: HTMLTextAreaElement | undefined;
+  const scrollOutputToBottom = () => {
+    if (outputRef) {
+      outputRef.scrollTop = outputRef.scrollHeight;
+    }
+  };
 
   createEffect(() => {
-    const t = taskData();
-    if (t?.status === "running") {
+    props.taskId;
+    setLiveEvents([]);
+    setPendingInitialScroll(true);
+  });
+
+  createEffect(() => {
+    if (!pendingInitialScroll() || props.activeTab() !== "conversation") {
+      return;
+    }
+    allEvents();
+    requestAnimationFrame(() => {
+      scrollOutputToBottom();
+      setPendingInitialScroll(false);
+    });
+  });
+
+  createEffect(() => {
+    const status = taskStatus();
+    if (status === "running") {
       const unsubscribe = subscribeToTask(
-        t.id,
+        props.taskId,
         (event) => {
           setLiveEvents((prev) => [...prev, event]);
-          setTimeout(() => {
-            if (outputRef) outputRef.scrollTop = outputRef.scrollHeight;
-          }, 10);
+          requestAnimationFrame(scrollOutputToBottom);
         },
         () => {
           setTimeout(() => refetchTask(), 300);
@@ -217,8 +239,7 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab; hideDiff?:
   });
 
   createEffect(() => {
-    const t = taskData();
-    if (t?.status === "running") {
+    if (taskStatus() === "running") {
       const id = setInterval(() => refetchTask(), 3000);
       onCleanup(() => clearInterval(id));
     }
@@ -460,6 +481,14 @@ function NewTaskPane(props: {
           rows={4}
           value={prompt()}
           onInput={(e) => setPrompt(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+              e.preventDefault();
+              if (!loading() && prompt().trim()) {
+                void submit(new Event("submit"));
+              }
+            }
+          }}
           placeholder="Describe what you want built..."
           class="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
         />
@@ -595,6 +624,14 @@ function NewEnvironmentPane(props: {
           rows={4}
           value={prompt()}
           onInput={(e) => setPrompt(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+              e.preventDefault();
+              if (!loading() && host().trim() && name().trim() && prompt().trim()) {
+                void submit(new Event("submit"));
+              }
+            }
+          }}
           placeholder="Initial prompt for the first task..."
           class="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
         />

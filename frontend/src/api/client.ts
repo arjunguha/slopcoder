@@ -147,6 +147,7 @@ export function subscribeToTask(
   const wsUrl = `${protocol}//${window.location.host}`;
   const passwordQuery = cachedPassword ? `?password=${encodeURIComponent(cachedPassword)}` : "";
   const ws = new WebSocket(`${wsUrl}/api/tasks/${taskId}/stream${passwordQuery}`);
+  let closedByClient = false;
 
   ws.onmessage = (event) => {
     try {
@@ -158,6 +159,9 @@ export function subscribeToTask(
   };
 
   ws.onclose = () => {
+    if (closedByClient) {
+      return;
+    }
     onClose?.();
   };
 
@@ -167,6 +171,7 @@ export function subscribeToTask(
 
   // Return cleanup function
   return () => {
+    closedByClient = true;
     ws.close();
   };
 }
