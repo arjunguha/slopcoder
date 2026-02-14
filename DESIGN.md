@@ -15,22 +15,16 @@ The system has four parts:
 Implemented in `crates/slopcoder-core/src/environment.rs`.
 
 An environment is now a **checked-out Git repository directory** (not a bare repo root).
-
-`environments.yaml` schema:
-
-```yaml
-worktrees_directory: "/path/to/isolated/worktrees"
-environments_root: "/path/to/env-root" # optional, defaults to ~/slop
-environments:
-  - "/path/to/repo-a"
-  - "/path/to/repo-b"
-```
+`slopagent` configuration is CLI-driven (no `environments.yaml`).
 
 Semantics:
-- `environments` is a list of repository directories.
+- `--environment PATH` is a repeatable list of explicit repository directories.
 - `worktrees_directory` is the parent directory used for isolated task worktrees.
-- `environments_root` is scanned at runtime for additional repositories:
-  direct children that are repositories, plus `<child>/main` and `<child>/master`.
+- `environments_root` is used for create-environment and runtime discovery.
+- `repo_root` is an optional additional runtime discovery root.
+- If `--environment` and `--repo-root` are both omitted, discovery falls back to `worktrees_directory`.
+- Discovery is recursive, bounded (`max_depth` default `10`, `max_repos` default `100`), skips hidden directories,
+  and does not descend into directories that are already Git repositories.
 - Environment IDs are the directory paths.
 
 Validation:
@@ -140,7 +134,7 @@ Task response payload now includes:
 Environment creation via API:
 - UI provides host + environment name only.
 - Agent creates `<environments_root>/<name>`, initializes a Git repository, and makes an empty initial commit.
-- Created/discovered environments are listed immediately without writing to `environments.yaml`.
+- Created/discovered environments are listed immediately without local config-file writes.
 - The create-environment screen also captures an initial prompt and immediately creates the first task in the new environment.
 
 ## 8. Frontend Model
@@ -148,8 +142,8 @@ Environment creation via API:
 Primary UI is `frontend/src/components/Workspace.tsx`.
 
 Behavior:
-- Environment list maps directly to configured repository directory entries.
-- Environment list also includes repositories auto-discovered under `environments_root`.
+- Environment list maps directly to explicit `--environment` repository entries.
+- Environment list also includes repositories auto-discovered under `environments_root` and optional `repo_root`.
 - "Create Environment" button appears above the list and opens a host+name form.
 - The create-environment form uses the same centered "Let's Build" visual style and starts the first task immediately after environment creation.
 - New task form no longer asks for base/feature branch.

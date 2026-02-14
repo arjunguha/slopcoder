@@ -5,7 +5,7 @@ use slopcoder_core::{
     task::{Task, TaskId},
     PersistenceError,
 };
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
@@ -71,6 +71,9 @@ pub struct AppState {
 
 struct AppStateInner {
     config: EnvironmentConfig,
+    repo_root: Option<PathBuf>,
+    discovery_max_depth: usize,
+    discovery_max_repos: usize,
     state_root: PathBuf,
     tasks: PersistentTaskStore,
     interrupt_channels: std::collections::HashMap<TaskId, tokio::sync::oneshot::Sender<()>>,
@@ -80,11 +83,12 @@ struct AppStateInner {
 
 impl AppState {
     pub async fn new(
-        config_path: PathBuf,
+        config: EnvironmentConfig,
+        repo_root: Option<PathBuf>,
+        discovery_max_depth: usize,
+        discovery_max_repos: usize,
         branch_model: String,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let config = EnvironmentConfig::load(&config_path).await?;
-
         if let Err(err) = config.validate_worktrees_directory().await {
             return Err(Box::new(StartupError::WorktreesDirValidation(err)));
         }
@@ -108,7 +112,13 @@ impl AppState {
         let mut tasks = PersistentTaskStore::new();
         let state_root = config.worktrees_directory.join(".slopcoder-state");
         tokio::fs::create_dir_all(&state_root).await?;
-        let discovered = discover_environments_under(&config.environments_root).await;
+        let discovered = discover_environments(
+            &config.environments_root,
+            repo_root.as_deref(),
+            discovery_max_depth,
+            discovery_max_repos,
+        )
+        .await;
         for env in config.environments.iter().chain(discovered.iter()) {
             let env_state_dir = state_root.join(sanitize_for_path(&env.name));
             tokio::fs::create_dir_all(&env_state_dir).await?;
@@ -119,6 +129,9 @@ impl AppState {
         Ok(Self {
             inner: Arc::new(RwLock::new(AppStateInner {
                 config,
+                repo_root,
+                discovery_max_depth,
+                discovery_max_repos,
                 state_root,
                 tasks,
                 interrupt_channels: std::collections::HashMap::new(),
@@ -129,12 +142,24 @@ impl AppState {
     }
 
     pub async fn list_environments(&self) -> Vec<Environment> {
-        let config = self.inner.read().await.config.clone();
+        let inner = self.inner.read().await;
+        let config = inner.config.clone();
+        let repo_root = inner.repo_root.clone();
+        let discovery_max_depth = inner.discovery_max_depth;
+        let discovery_max_repos = inner.discovery_max_repos;
+        drop(inner);
         let mut by_name = std::collections::BTreeMap::new();
         for env in config.environments {
             by_name.insert(env.name.clone(), env);
         }
-        for env in discover_environments_under(&config.environments_root).await {
+        for env in discover_environments(
+            &config.environments_root,
+            repo_root.as_deref(),
+            discovery_max_depth,
+            discovery_max_repos,
+        )
+        .await
+        {
             by_name.insert(env.name.clone(), env);
         }
         by_name.into_values().collect()
@@ -365,13 +390,19 @@ impl AppState {
     }
 }
 
-async fn discover_environments_under(root: &Path) -> Vec<Environment> {
+async fn discover_environments(
+    environments_root: &Path,
+    repo_root: Option<&Path>,
+    max_depth: usize,
+    max_repos: usize,
+) -> Vec<Environment> {
     let mut paths = Vec::new();
     let mut seen = HashSet::new();
 
-    for candidate in candidate_paths(root).await {
-        if seen.insert(candidate.clone()) && is_checked_out_repo(&candidate).await {
-            paths.push(candidate);
+    for root in [Some(environments_root), repo_root].into_iter().flatten() {
+        discover_under_root(root, max_depth, max_repos, &mut seen, &mut paths).await;
+        if paths.len() >= max_repos {
+            break;
         }
     }
 
@@ -385,29 +416,70 @@ async fn discover_environments_under(root: &Path) -> Vec<Environment> {
         .collect()
 }
 
-async fn candidate_paths(root: &Path) -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
+async fn discover_under_root(
+    root: &Path,
+    max_depth: usize,
+    max_repos: usize,
+    seen: &mut HashSet<PathBuf>,
+    out: &mut Vec<PathBuf>,
+) {
     if !root.is_dir() {
-        return candidates;
+        return;
     }
 
-    candidates.push(root.to_path_buf());
-    let mut entries = match tokio::fs::read_dir(root).await {
-        Ok(entries) => entries,
-        Err(_) => return candidates,
-    };
+    let mut queue = VecDeque::new();
+    queue.push_back((root.to_path_buf(), 0usize));
 
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        if !path.is_dir() {
+    while let Some((path, depth)) = queue.pop_front() {
+        if out.len() >= max_repos {
+            return;
+        }
+
+        let canonical = canonical_for_dedupe(&path).await.unwrap_or(path.clone());
+        if !seen.insert(canonical.clone()) {
             continue;
         }
-        candidates.push(path.clone());
-        candidates.push(path.join("main"));
-        candidates.push(path.join("master"));
-    }
 
-    candidates
+        if is_checked_out_repo(&path).await {
+            out.push(canonical);
+            continue;
+        }
+
+        if depth >= max_depth {
+            continue;
+        }
+
+        let mut entries = match tokio::fs::read_dir(&path).await {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let child = entry.path();
+            let file_type = match entry.file_type().await {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            if is_hidden_component(&child) {
+                continue;
+            }
+            queue.push_back((child, depth + 1));
+        }
+    }
+}
+
+async fn canonical_for_dedupe(path: &Path) -> Option<PathBuf> {
+    tokio::fs::canonicalize(path).await.ok()
+}
+
+fn is_hidden_component(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.starts_with('.'))
+        .unwrap_or(false)
 }
 
 async fn is_checked_out_repo(path: &Path) -> bool {
@@ -451,5 +523,59 @@ fn sanitize_for_path(value: &str) -> String {
         "env".to_string()
     } else {
         compact
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    async fn init_repo(path: &Path) {
+        tokio::fs::create_dir_all(path).await.unwrap();
+        let output = Command::new("git")
+            .args(["init"])
+            .current_dir(path)
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+    }
+
+    #[tokio::test]
+    async fn test_discover_environments_respects_depth_and_repo_cap() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        init_repo(&root.join("a")).await;
+        init_repo(&root.join("nested").join("b")).await;
+        init_repo(&root.join("nested").join("deeper").join("c")).await;
+
+        let repos = discover_environments(root, None, 2, 2).await;
+        assert_eq!(repos.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_discover_environments_skips_hidden_and_no_recurse_into_repo() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+
+        let outer_repo = root.join("outer");
+        init_repo(&outer_repo).await;
+        init_repo(&outer_repo.join("inner-submodule-like")).await;
+        init_repo(&root.join(".hidden-repo")).await;
+        init_repo(&root.join("visible")).await;
+
+        let repos = discover_environments(root, None, 10, 100).await;
+        let names: HashSet<String> = repos.into_iter().map(|e| e.name).collect();
+
+        assert!(names.contains(&outer_repo.to_string_lossy().to_string()));
+        assert!(names.contains(&root.join("visible").to_string_lossy().to_string()));
+        assert!(!names.contains(
+            &outer_repo
+                .join("inner-submodule-like")
+                .to_string_lossy()
+                .to_string()
+        ));
+        assert!(!names.contains(&root.join(".hidden-repo").to_string_lossy().to_string()));
     }
 }

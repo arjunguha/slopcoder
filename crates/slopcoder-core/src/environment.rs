@@ -14,9 +14,6 @@ pub enum EnvironmentError {
     #[error("Failed to read configuration file: {0}")]
     ConfigReadError(#[from] std::io::Error),
 
-    #[error("Failed to parse configuration: {0}")]
-    ConfigParseError(#[from] serde_yaml::Error),
-
     #[error("Environment '{0}' not found")]
     NotFound(String),
 
@@ -51,16 +48,6 @@ pub enum EnvironmentError {
     WorktreesDirInvalid(PathBuf),
 }
 
-/// Configuration file format used for YAML serialization.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EnvironmentConfigFile {
-    pub worktrees_directory: PathBuf,
-    #[serde(default)]
-    pub environments_root: Option<PathBuf>,
-    pub environments: Vec<PathBuf>,
-}
-
 /// In-memory environment configuration.
 #[derive(Debug, Clone)]
 pub struct EnvironmentConfig {
@@ -73,29 +60,22 @@ pub struct EnvironmentConfig {
 }
 
 impl EnvironmentConfig {
-    /// Load configuration from a YAML file.
-    pub async fn load(path: impl AsRef<Path>) -> Result<Self, EnvironmentError> {
-        let content = tokio::fs::read_to_string(path).await?;
-        Self::from_yaml(&content)
-    }
-
-    /// Load configuration from a YAML string.
-    pub fn from_yaml(yaml: &str) -> Result<Self, EnvironmentError> {
-        let file: EnvironmentConfigFile = serde_yaml::from_str(yaml)?;
-        Ok(Self {
-            worktrees_directory: file.worktrees_directory,
-            environments_root: file
-                .environments_root
-                .unwrap_or_else(default_environments_root),
-            environments: file
-                .environments
+    pub fn new(
+        worktrees_directory: PathBuf,
+        environments_root: Option<PathBuf>,
+        environments: Vec<PathBuf>,
+    ) -> Self {
+        Self {
+            worktrees_directory,
+            environments_root: environments_root.unwrap_or_else(Self::default_environments_root),
+            environments: environments
                 .into_iter()
                 .map(|directory| Environment {
                     name: directory.to_string_lossy().to_string(),
                     directory,
                 })
                 .collect(),
-        })
+        }
     }
 
     /// Validate the worktrees directory exists and is a directory.
@@ -112,28 +92,12 @@ impl EnvironmentConfig {
         self.environments.iter().find(|e| e.name == name)
     }
 
-    /// Save configuration to a YAML file.
-    pub async fn save(&self, path: impl AsRef<Path>) -> Result<(), EnvironmentError> {
-        let file = EnvironmentConfigFile {
-            worktrees_directory: self.worktrees_directory.clone(),
-            environments_root: Some(self.environments_root.clone()),
-            environments: self
-                .environments
-                .iter()
-                .map(|e| e.directory.clone())
-                .collect(),
-        };
-        let content = serde_yaml::to_string(&file)?;
-        tokio::fs::write(path, content).await?;
-        Ok(())
+    pub fn default_environments_root() -> PathBuf {
+        std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("slop")
     }
-}
-
-fn default_environments_root() -> PathBuf {
-    std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("slop")
 }
 
 /// An environment definition.
@@ -362,17 +326,16 @@ fn sanitize_for_path(value: &str) -> String {
 mod tests {
     use super::*;
 
-    const SAMPLE_CONFIG: &str = r#"
-worktrees_directory: "/tmp/slopcoder-worktrees"
-environments_root: "/tmp/slop"
-environments:
-  - "/tmp/test-project"
-  - "/home/user/projects/another"
-"#;
-
     #[test]
-    fn test_parse_config() {
-        let config = EnvironmentConfig::from_yaml(SAMPLE_CONFIG).unwrap();
+    fn test_build_config() {
+        let config = EnvironmentConfig::new(
+            PathBuf::from("/tmp/slopcoder-worktrees"),
+            Some(PathBuf::from("/tmp/slop")),
+            vec![
+                PathBuf::from("/tmp/test-project"),
+                PathBuf::from("/home/user/projects/another"),
+            ],
+        );
         assert_eq!(config.environments.len(), 2);
         assert_eq!(config.environments_root, PathBuf::from("/tmp/slop"));
         assert_eq!(
@@ -387,7 +350,11 @@ environments:
 
     #[test]
     fn test_find_environment() {
-        let config = EnvironmentConfig::from_yaml(SAMPLE_CONFIG).unwrap();
+        let config = EnvironmentConfig::new(
+            PathBuf::from("/tmp/slopcoder-worktrees"),
+            Some(PathBuf::from("/tmp/slop")),
+            vec![PathBuf::from("/tmp/test-project")],
+        );
         let env_name = PathBuf::from("/tmp/test-project")
             .to_string_lossy()
             .to_string();
@@ -411,5 +378,11 @@ environments:
             env.worktree_path(Path::new("/tmp/worktrees"), "feature/foo"),
             PathBuf::from("/tmp/worktrees/tmp-test-project/feature-foo")
         );
+    }
+
+    #[test]
+    fn test_default_environments_root() {
+        let root = EnvironmentConfig::default_environments_root();
+        assert!(root.ends_with("slop"));
     }
 }

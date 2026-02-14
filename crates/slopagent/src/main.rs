@@ -47,14 +47,49 @@ async fn main() {
         .init();
 
     let mut args = std::env::args().skip(1);
-    let mut config_path: Option<PathBuf> = None;
     let mut server_url: Option<String> = None;
     let mut branch_model = "claude-haiku-4-5".to_string();
     let mut host_override: Option<String> = None;
+    let mut worktrees_directory: Option<PathBuf> = None;
+    let mut environments_root: Option<PathBuf> = None;
+    let mut environment_directories: Vec<PathBuf> = Vec::new();
+    let mut repo_root: Option<PathBuf> = None;
+    let mut discovery_max_depth: usize = 10;
+    let mut discovery_max_repos: usize = 100;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--server" | "--coordinator" => server_url = args.next(),
+            "--worktrees-directory" => worktrees_directory = args.next().map(PathBuf::from),
+            "--environments-root" => environments_root = args.next().map(PathBuf::from),
+            "--environment" => {
+                if let Some(path) = args.next() {
+                    environment_directories.push(PathBuf::from(path));
+                }
+            }
+            "--repo-root" => repo_root = args.next().map(PathBuf::from),
+            "--discover-max-depth" => {
+                if let Some(value) = args.next() {
+                    match value.parse::<usize>() {
+                        Ok(parsed) => discovery_max_depth = parsed,
+                        Err(_) => {
+                            tracing::error!("Invalid --discover-max-depth value: {}", value);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+            "--discover-max-repos" => {
+                if let Some(value) = args.next() {
+                    match value.parse::<usize>() {
+                        Ok(parsed) => discovery_max_repos = parsed,
+                        Err(_) => {
+                            tracing::error!("Invalid --discover-max-repos value: {}", value);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
             "--branch-model" => {
                 if let Some(value) = args.next() {
                     branch_model = value;
@@ -75,22 +110,63 @@ async fn main() {
             }
             "-h" | "--help" => {
                 println!(
-                    "Usage: slopagent [config.yaml] --server ws://HOST:PORT [--name HOSTNAME] [--branch-model MODEL]\n\
-Defaults: config=environments.yaml, branch-model=claude-haiku-4-5"
+                    "Usage: slopagent --server ws://HOST:PORT --worktrees-directory PATH [options]\n\
+Options:\n\
+  --name HOSTNAME                 Override host label shown in UI\n\
+  --branch-model MODEL            Topic naming model (default: claude-haiku-4-5)\n\
+  --environments-root PATH        Root for created envs + auto-discovery (default: ~/slop)\n\
+  --repo-root PATH                Additional root to auto-discover repos (defaults to --worktrees-directory when --environment is not used)\n\
+  --environment PATH              Explicit environment repo (repeatable)\n\
+  --discover-max-depth N          Max recursive discovery depth (default: 10)\n\
+  --discover-max-repos N          Max discovered repos total (default: 100)"
                 );
                 return;
             }
             _ => {
-                if config_path.is_none() {
-                    config_path = Some(PathBuf::from(arg));
-                }
+                tracing::error!("Unknown argument: {}", arg);
+                std::process::exit(1);
             }
         }
     }
 
-    let config_path = config_path.unwrap_or_else(|| PathBuf::from("environments.yaml"));
-    if !config_path.exists() {
-        tracing::error!("Config file not found: {}", config_path.display());
+    let worktrees_directory = match worktrees_directory {
+        Some(path) => path,
+        None => {
+            tracing::error!("Missing required --worktrees-directory argument");
+            std::process::exit(1);
+        }
+    };
+
+    if discovery_max_repos == 0 {
+        tracing::error!("--discover-max-repos must be greater than 0");
+        std::process::exit(1);
+    }
+
+    let has_explicit_environments = !environment_directories.is_empty();
+
+    let config = slopcoder_core::environment::EnvironmentConfig::new(
+        worktrees_directory,
+        environments_root,
+        environment_directories,
+    );
+    let repo_root = resolve_repo_root(
+        repo_root,
+        has_explicit_environments,
+        config.worktrees_directory.clone(),
+    );
+
+    if let Some(root) = &repo_root {
+        if root.exists() && !root.is_dir() {
+            tracing::error!("--repo-root is not a directory: {}", root.display());
+            std::process::exit(1);
+        }
+    }
+
+    if config.environments_root.exists() && !config.environments_root.is_dir() {
+        tracing::error!(
+            "--environments-root is not a directory: {}",
+            config.environments_root.display()
+        );
         std::process::exit(1);
     }
 
@@ -109,7 +185,15 @@ Defaults: config=environments.yaml, branch-model=claude-haiku-4-5"
         std::process::exit(1);
     }
 
-    let state = match AppState::new(config_path.clone(), branch_model).await {
+    let state = match AppState::new(
+        config,
+        repo_root,
+        discovery_max_depth,
+        discovery_max_repos,
+        branch_model,
+    )
+    .await
+    {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("Startup checks failed: {}", e);
@@ -179,6 +263,24 @@ fn normalize_server_url(input: &str) -> String {
         return trimmed.to_string();
     }
     format!("{}/agent/connect", trimmed)
+}
+
+fn resolve_repo_root(
+    repo_root: Option<PathBuf>,
+    has_explicit_environments: bool,
+    worktrees_directory: PathBuf,
+) -> Option<PathBuf> {
+    match repo_root {
+        Some(path) => Some(path),
+        None if !has_explicit_environments => {
+            tracing::info!(
+                "No --repo-root/--environment provided; discovering repositories under --worktrees-directory ({})",
+                worktrees_directory.display()
+            );
+            Some(worktrees_directory)
+        }
+        None => None,
+    }
 }
 
 async fn run_connection(
@@ -914,4 +1016,33 @@ fn map_state_error(err: StateError) -> RpcError {
 #[allow(dead_code)]
 fn map_ws_error(err: tungstenite::Error) -> String {
     err.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_repo_root;
+    use std::path::PathBuf;
+
+    #[test]
+    fn resolve_repo_root_uses_explicit_value() {
+        let explicit = PathBuf::from("/tmp/repos");
+        let resolved = resolve_repo_root(
+            Some(explicit.clone()),
+            false,
+            PathBuf::from("/tmp/worktrees"),
+        );
+        assert_eq!(resolved, Some(explicit));
+    }
+
+    #[test]
+    fn resolve_repo_root_falls_back_to_worktrees_without_explicit_envs() {
+        let resolved = resolve_repo_root(None, false, PathBuf::from("/tmp/worktrees"));
+        assert_eq!(resolved, Some(PathBuf::from("/tmp/worktrees")));
+    }
+
+    #[test]
+    fn resolve_repo_root_stays_none_with_explicit_envs() {
+        let resolved = resolve_repo_root(None, true, PathBuf::from("/tmp/worktrees"));
+        assert_eq!(resolved, None);
+    }
 }

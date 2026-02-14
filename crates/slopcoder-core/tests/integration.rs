@@ -286,13 +286,11 @@ async fn test_task_with_environment() {
 
 #[tokio::test]
 async fn test_config_loading() {
-    let yaml = r#"
-worktrees_directory: "/tmp/worktrees"
-environments:
-  - "/tmp/test-project"
-"#;
-
-    let config = EnvironmentConfig::from_yaml(yaml).expect("Should parse config");
+    let config = EnvironmentConfig::new(
+        std::path::PathBuf::from("/tmp/worktrees"),
+        None,
+        vec![std::path::PathBuf::from("/tmp/test-project")],
+    );
     assert_eq!(config.environments.len(), 1);
     assert_eq!(config.environments[0].name, "/tmp/test-project".to_string());
 }
