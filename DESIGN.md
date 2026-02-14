@@ -18,11 +18,9 @@ An environment is now a **checked-out Git repository directory** (not a bare rep
 `slopagent` configuration is CLI-driven (no `environments.yaml`).
 
 Semantics:
-- `--environment PATH` is a repeatable list of explicit repository directories.
 - `worktrees_directory` is the parent directory used for isolated task worktrees.
 - `environments_root` is used for create-environment and runtime discovery.
 - `repo_root` is an optional additional runtime discovery root.
-- If `--environment` and `--repo-root` are both omitted, discovery falls back to `worktrees_directory`.
 - Discovery is recursive, bounded (`max_depth` default `10`, `max_repos` default `100`), skips hidden directories,
   and does not descend into directories that are already Git repositories.
 - Environment IDs are the directory paths.
@@ -142,8 +140,7 @@ Environment creation via API:
 Primary UI is `frontend/src/components/Workspace.tsx`.
 
 Behavior:
-- Environment list maps directly to explicit `--environment` repository entries.
-- Environment list also includes repositories auto-discovered under `environments_root` and optional `repo_root`.
+- Environment list includes repositories auto-discovered under `environments_root` and optional `repo_root`.
 - "Create Environment" button appears above the list and opens a host+name form.
 - The create-environment form uses the same centered "Let's Build" visual style and starts the first task immediately after environment creation.
 - New task form no longer asks for base/feature branch.

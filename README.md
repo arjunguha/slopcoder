@@ -18,8 +18,8 @@ Slopcoder relies on git worktrees. If you don't know how to use them, you won't
 be able to use Slopcoder.
 
 Each `slopagent` manages repositories local to that host. Configuration is now
-provided via CLI flags: explicit environment paths (optional), roots to scan
-for repositories, and a shared directory for isolated worktrees.
+provided via CLI flags: roots to scan for repositories and a shared directory
+for isolated worktrees.
 
 Task metadata is stored under:
 - `<worktrees_directory>/.slopcoder-state/<environment-slug>/tasks.yaml`
@@ -36,8 +36,6 @@ immediately. `slopagent` also auto-discovers repositories under
 `environments_root` and optional `repo_root` recursively, with defaults
 `--discover-max-depth 10` and `--discover-max-repos 100`. Discovery skips hidden
 directories and never descends into directories that are already Git repos.
-If neither `--environment` nor `--repo-root` is provided, `slopagent` falls back
-to discovering repos under `--worktrees-directory`.
 
 Start the coordinator:
 
@@ -56,8 +54,7 @@ slopagent \
   --server ws://127.0.0.1:8080 \
   --worktrees-directory /path/to/worktrees \
   --environments-root /path/to/slop \
-  --repo-root /path/to/repos \
-  --environment /scratch/arjun-nosudo/repos/nuprl/MultiPL-E
+  --repo-root /path/to/repos
 ```
 
 `slopagent` always prompts for the connection password in the terminal. You can
