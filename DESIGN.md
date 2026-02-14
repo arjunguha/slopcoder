@@ -156,8 +156,11 @@ Behavior:
 - User can toggle `Run task in isolated worktree (mergeable)`.
 - `Enable web search` is shown only when the selected agent supports it.
 - `web_search` is currently wired to Codex (`--search`) and ignored for other agents.
+- Prompt textareas in task-creation panes support `Ctrl+Enter` (and `Cmd+Enter`) to submit without clicking.
 - Task list and task header display task `name` (topic).
 - Merge controls are shown only for `worktree` tasks.
+- Opening a different task conversation now auto-scrolls to the bottom of the transcript.
+- Live conversation streaming avoids subscription churn during task polling to reduce update flicker.
 
 ## 9. Testing
 
