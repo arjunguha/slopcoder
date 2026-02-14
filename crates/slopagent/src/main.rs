@@ -59,9 +59,8 @@ async fn main() {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--server" | "--coordinator" => server_url = args.next(),
-            "--worktrees-directory" => worktrees_directory = args.next().map(PathBuf::from),
-            "--environments-root" => environments_root = args.next().map(PathBuf::from),
-            "--repo-root" => repo_root = args.next().map(PathBuf::from),
+            "--worktrees" => worktrees_directory = args.next().map(PathBuf::from),
+            "--slop" => environments_root = args.next().map(PathBuf::from),
             "--discover-max-depth" => {
                 if let Some(value) = args.next() {
                     match value.parse::<usize>() {
@@ -104,31 +103,40 @@ async fn main() {
             }
             "-h" | "--help" => {
                 println!(
-                    "Usage: slopagent --server ws://HOST:PORT --worktrees-directory PATH [options]\n\
+                    "Usage: slopagent REPO_ROOT --server ws://HOST:PORT [options]\n\
 Options:\n\
+  REPO_ROOT                       Positional root scanned for repositories (required)\n\
   --name HOSTNAME                 Override host label shown in UI\n\
   --branch-model MODEL            Topic naming model (default: claude-haiku-4-5)\n\
-  --environments-root PATH        Root for created envs + auto-discovery (default: ~/slop)\n\
-  --repo-root PATH                Additional root to auto-discover repos\n\
+  --worktrees PATH                Directory for task worktrees/state (default: ~/slop_worktrees)\n\
+  --slop PATH                     Root for created envs + auto-discovery (default: ~/slop)\n\
   --discover-max-depth N          Max recursive discovery depth (default: 10)\n\
   --discover-max-repos N          Max discovered repos total (default: 100)"
                 );
                 return;
             }
             _ => {
-                tracing::error!("Unknown argument: {}", arg);
-                std::process::exit(1);
+                if arg.starts_with('-') {
+                    tracing::error!("Unknown argument: {}", arg);
+                    std::process::exit(1);
+                }
+                if repo_root.is_some() {
+                    tracing::error!("Unexpected extra positional argument: {}", arg);
+                    std::process::exit(1);
+                }
+                repo_root = Some(PathBuf::from(arg));
             }
         }
     }
 
-    let worktrees_directory = match worktrees_directory {
+    let repo_root = match repo_root {
         Some(path) => path,
         None => {
-            tracing::error!("Missing required --worktrees-directory argument");
+            tracing::error!("Missing required REPO_ROOT positional argument");
             std::process::exit(1);
         }
     };
+    let worktrees_directory = worktrees_directory.unwrap_or_else(default_worktrees_directory);
 
     if discovery_max_repos == 0 {
         tracing::error!("--discover-max-repos must be greater than 0");
@@ -141,16 +149,14 @@ Options:\n\
         Vec::new(),
     );
 
-    if let Some(root) = &repo_root {
-        if root.exists() && !root.is_dir() {
-            tracing::error!("--repo-root is not a directory: {}", root.display());
-            std::process::exit(1);
-        }
+    if repo_root.exists() && !repo_root.is_dir() {
+        tracing::error!("REPO_ROOT is not a directory: {}", repo_root.display());
+        std::process::exit(1);
     }
 
     if config.environments_root.exists() && !config.environments_root.is_dir() {
         tracing::error!(
-            "--environments-root is not a directory: {}",
+            "--slop is not a directory: {}",
             config.environments_root.display()
         );
         std::process::exit(1);
@@ -173,7 +179,7 @@ Options:\n\
 
     let state = match AppState::new(
         config,
-        repo_root,
+        Some(repo_root),
         discovery_max_depth,
         discovery_max_repos,
         branch_model,
@@ -241,6 +247,13 @@ fn default_hostname() -> String {
         .and_then(|s| s.into_string().ok())
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "unknown-host".to_string())
+}
+
+fn default_worktrees_directory() -> PathBuf {
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("slop_worktrees")
 }
 
 fn normalize_server_url(input: &str) -> String {

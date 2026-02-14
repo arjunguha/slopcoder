@@ -36,6 +36,10 @@ immediately. `slopagent` also auto-discovers repositories under
 `environments_root` and optional `repo_root` recursively, with defaults
 `--discover-max-depth 10` and `--discover-max-repos 100`. Discovery skips hidden
 directories and never descends into directories that are already Git repos.
+CLI shape:
+- Positional `REPO_ROOT` is required and has no default.
+- `--worktrees` defaults to `~/slop_worktrees`.
+- `--slop` defaults to `~/slop`.
 
 Start the coordinator:
 
@@ -51,10 +55,10 @@ Start an agent (local or remote):
 
 ```bash
 slopagent \
+  /path/to/repos \
   --server ws://127.0.0.1:8080 \
-  --worktrees-directory /path/to/worktrees \
-  --environments-root /path/to/slop \
-  --repo-root /path/to/repos
+  --worktrees /path/to/worktrees \
+  --slop /path/to/slop
 ```
 
 `slopagent` always prompts for the connection password in the terminal. You can
@@ -62,8 +66,9 @@ override the host label shown in the UI:
 
 ```bash
 slopagent \
+  /path/to/repos \
   --server ws://127.0.0.1:8080 \
-  --worktrees-directory /path/to/worktrees \
+  --worktrees /path/to/worktrees \
   --name laptop-local
 ```
 

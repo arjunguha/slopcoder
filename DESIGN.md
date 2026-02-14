@@ -18,9 +18,9 @@ An environment is now a **checked-out Git repository directory** (not a bare rep
 `slopagent` configuration is CLI-driven (no `environments.yaml`).
 
 Semantics:
-- `worktrees_directory` is the parent directory used for isolated task worktrees.
-- `environments_root` is used for create-environment and runtime discovery.
-- `repo_root` is an optional additional runtime discovery root.
+- CLI positional `REPO_ROOT` is required and is scanned for repositories.
+- `--worktrees` (default `~/slop_worktrees`) is the parent directory used for isolated task worktrees.
+- `--slop` (default `~/slop`) is used for create-environment and runtime discovery.
 - Discovery is recursive, bounded (`max_depth` default `10`, `max_repos` default `100`), skips hidden directories,
   and does not descend into directories that are already Git repositories.
 - Environment IDs are the directory paths.
