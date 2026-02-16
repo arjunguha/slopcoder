@@ -184,7 +184,8 @@ Behavior:
 - Live conversation streaming avoids subscription churn during task polling to reduce update flicker.
 - `command_execution` transcript items now render as command cards showing the command text and at most the first 5 lines of output (with truncation indicator).
 - Task detail tabs now include `Terminal` beside `Conversation` and `Diff` on desktop.
-- Terminal uses `xterm` over a coordinator websocket and starts in the selected task's environment directory.
+- Terminal uses `xterm` over a coordinator websocket that proxies I/O to the owning `slopagent` host.
+- Terminal starts in the selected task workspace directory on that remote host (`worktree_path` for isolated tasks, environment directory for in-place tasks).
 - Terminal websocket supports dynamic PTY resize so the shell tracks pane/window dimensions.
 
 ## 9. Testing

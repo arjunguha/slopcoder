@@ -2,6 +2,7 @@ mod state;
 
 use futures::{SinkExt, StreamExt};
 use http::StatusCode;
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use slopcoder_core::{
     agent_rpc::{AgentCreateTaskRequest, AgentEnvelope, AgentRequest, AgentResponse},
     anyagent::{resume_anyagent, spawn_anyagent, AgentKind},
@@ -10,12 +11,14 @@ use slopcoder_core::{
     AgentEvent,
 };
 use state::{AppState, CreateEnvironmentError, StateError};
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::fs::{copy, create_dir_all, remove_file, rename, File, OpenOptions};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tokio::time::{sleep, Duration};
 use tokio_tungstenite::{
     connect_async,
@@ -35,6 +38,204 @@ impl RpcError {
         Self {
             status: status.as_u16(),
             error: error.into(),
+        }
+    }
+}
+
+enum PtyCommand {
+    Input(Vec<u8>),
+    Resize { rows: u16, cols: u16 },
+    Shutdown,
+}
+
+#[derive(Clone)]
+struct TerminalManager {
+    sessions: Arc<Mutex<HashMap<Uuid, std::sync::mpsc::Sender<PtyCommand>>>>,
+    out_tx: mpsc::UnboundedSender<AgentEnvelope>,
+}
+
+impl TerminalManager {
+    fn new(out_tx: mpsc::UnboundedSender<AgentEnvelope>) -> Self {
+        Self {
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+            out_tx,
+        }
+    }
+
+    async fn open(&self, state: AppState, terminal_id: Uuid, task_id: TaskId) {
+        self.close(terminal_id).await;
+        let Some(task) = state.get_task(task_id).await else {
+            let _ = self.out_tx.send(AgentEnvelope::TerminalError {
+                terminal_id,
+                error: format!("Task not found: {}", task_id),
+            });
+            let _ = self
+                .out_tx
+                .send(AgentEnvelope::TerminalClosed { terminal_id });
+            return;
+        };
+
+        let cwd = task.worktree_path.clone();
+        if !cwd.is_dir() {
+            let _ = self.out_tx.send(AgentEnvelope::TerminalError {
+                terminal_id,
+                error: format!("Task workspace not found: {}", cwd.display()),
+            });
+            let _ = self
+                .out_tx
+                .send(AgentEnvelope::TerminalClosed { terminal_id });
+            return;
+        }
+
+        let pty_system = native_pty_system();
+        let pty_pair = match pty_system.openpty(PtySize {
+            rows: 30,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        }) {
+            Ok(pair) => pair,
+            Err(e) => {
+                let _ = self.out_tx.send(AgentEnvelope::TerminalError {
+                    terminal_id,
+                    error: format!("Failed to open PTY: {}", e),
+                });
+                let _ = self
+                    .out_tx
+                    .send(AgentEnvelope::TerminalClosed { terminal_id });
+                return;
+            }
+        };
+
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        let mut cmd = CommandBuilder::new(shell);
+        cmd.cwd(cwd);
+
+        let mut child = match pty_pair.slave.spawn_command(cmd) {
+            Ok(child) => child,
+            Err(e) => {
+                let _ = self.out_tx.send(AgentEnvelope::TerminalError {
+                    terminal_id,
+                    error: format!("Failed to spawn shell: {}", e),
+                });
+                let _ = self
+                    .out_tx
+                    .send(AgentEnvelope::TerminalClosed { terminal_id });
+                return;
+            }
+        };
+        drop(pty_pair.slave);
+
+        let mut pty_reader = match pty_pair.master.try_clone_reader() {
+            Ok(reader) => reader,
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = self.out_tx.send(AgentEnvelope::TerminalError {
+                    terminal_id,
+                    error: format!("Failed to clone PTY reader: {}", e),
+                });
+                let _ = self
+                    .out_tx
+                    .send(AgentEnvelope::TerminalClosed { terminal_id });
+                return;
+            }
+        };
+        let mut pty_writer = match pty_pair.master.take_writer() {
+            Ok(writer) => writer,
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = self.out_tx.send(AgentEnvelope::TerminalError {
+                    terminal_id,
+                    error: format!("Failed to acquire PTY writer: {}", e),
+                });
+                let _ = self
+                    .out_tx
+                    .send(AgentEnvelope::TerminalClosed { terminal_id });
+                return;
+            }
+        };
+        let pty_master = pty_pair.master;
+
+        let (pty_command_tx, pty_command_rx) = std::sync::mpsc::channel::<PtyCommand>();
+        self.sessions
+            .lock()
+            .await
+            .insert(terminal_id, pty_command_tx.clone());
+
+        let out_tx_for_reader = self.out_tx.clone();
+        std::thread::spawn(move || {
+            let mut buffer = [0_u8; 8192];
+            loop {
+                match std::io::Read::read(&mut pty_reader, &mut buffer) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if out_tx_for_reader
+                            .send(AgentEnvelope::TerminalData {
+                                terminal_id,
+                                data: buffer[..n].to_vec(),
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+            let _ = out_tx_for_reader.send(AgentEnvelope::TerminalClosed { terminal_id });
+        });
+
+        std::thread::spawn(move || {
+            for cmd in pty_command_rx {
+                match cmd {
+                    PtyCommand::Input(data) => {
+                        if std::io::Write::write_all(&mut pty_writer, &data).is_err() {
+                            break;
+                        }
+                        if std::io::Write::flush(&mut pty_writer).is_err() {
+                            break;
+                        }
+                    }
+                    PtyCommand::Resize { rows, cols } => {
+                        let _ = pty_master.resize(PtySize {
+                            rows,
+                            cols,
+                            pixel_width: 0,
+                            pixel_height: 0,
+                        });
+                    }
+                    PtyCommand::Shutdown => break,
+                }
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+        });
+    }
+
+    async fn input(&self, terminal_id: Uuid, data: Vec<u8>) {
+        let tx = { self.sessions.lock().await.get(&terminal_id).cloned() };
+        if let Some(tx) = tx {
+            if tx.send(PtyCommand::Input(data)).is_err() {
+                self.sessions.lock().await.remove(&terminal_id);
+            }
+        }
+    }
+
+    async fn resize(&self, terminal_id: Uuid, rows: u16, cols: u16) {
+        let tx = { self.sessions.lock().await.get(&terminal_id).cloned() };
+        if let Some(tx) = tx {
+            if tx.send(PtyCommand::Resize { rows, cols }).is_err() {
+                self.sessions.lock().await.remove(&terminal_id);
+            }
+        }
+    }
+
+    async fn close(&self, terminal_id: Uuid) {
+        if let Some(tx) = self.sessions.lock().await.remove(&terminal_id) {
+            let _ = tx.send(PtyCommand::Shutdown);
         }
     }
 }
@@ -279,6 +480,7 @@ async fn run_connection(
         .await?;
 
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<AgentEnvelope>();
+    let terminal_manager = TerminalManager::new(out_tx.clone());
     let writer = tokio::spawn(async move {
         while let Some(envelope) = out_rx.recv().await {
             let payload = match serde_json::to_string(&envelope) {
@@ -333,6 +535,38 @@ async fn run_connection(
                         },
                     };
                     let _ = out_tx.send(outgoing);
+                });
+            }
+            AgentEnvelope::TerminalOpen {
+                terminal_id,
+                task_id,
+            } => {
+                let manager = terminal_manager.clone();
+                let state = state.clone();
+                tokio::spawn(async move {
+                    manager.open(state, terminal_id, task_id).await;
+                });
+            }
+            AgentEnvelope::TerminalInput { terminal_id, data } => {
+                let manager = terminal_manager.clone();
+                tokio::spawn(async move {
+                    manager.input(terminal_id, data).await;
+                });
+            }
+            AgentEnvelope::TerminalResize {
+                terminal_id,
+                rows,
+                cols,
+            } => {
+                let manager = terminal_manager.clone();
+                tokio::spawn(async move {
+                    manager.resize(terminal_id, rows, cols).await;
+                });
+            }
+            AgentEnvelope::TerminalClose { terminal_id } => {
+                let manager = terminal_manager.clone();
+                tokio::spawn(async move {
+                    manager.close(terminal_id).await;
                 });
             }
             _ => {

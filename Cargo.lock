@@ -3227,6 +3227,7 @@ dependencies = [
  "futures",
  "hostname",
  "http 1.4.0",
+ "portable-pty",
  "serde",
  "serde_json",
  "slopcoder-core",
@@ -3267,7 +3268,6 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "futures",
- "portable-pty",
  "serde",
  "serde_json",
  "slopcoder-core",

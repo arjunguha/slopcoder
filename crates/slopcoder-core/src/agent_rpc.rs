@@ -7,6 +7,7 @@ use crate::{
     AgentEvent,
 };
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// Message envelope exchanged over the coordinator<->agent websocket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +37,24 @@ pub enum AgentEnvelope {
     },
     /// Event emitted by a running task.
     TaskEvent { task_id: TaskId, event: AgentEvent },
+    /// Open a remote terminal session for a task workspace.
+    TerminalOpen { terminal_id: Uuid, task_id: TaskId },
+    /// Send terminal stdin bytes to an existing remote terminal session.
+    TerminalInput { terminal_id: Uuid, data: Vec<u8> },
+    /// Resize an existing remote terminal session.
+    TerminalResize {
+        terminal_id: Uuid,
+        rows: u16,
+        cols: u16,
+    },
+    /// Close an existing remote terminal session.
+    TerminalClose { terminal_id: Uuid },
+    /// Remote terminal stdout/stderr bytes.
+    TerminalData { terminal_id: Uuid, data: Vec<u8> },
+    /// Remote terminal session closed.
+    TerminalClosed { terminal_id: Uuid },
+    /// Remote terminal setup/runtime error.
+    TerminalError { terminal_id: Uuid, error: String },
 }
 
 /// Request payloads from coordinator -> agent.

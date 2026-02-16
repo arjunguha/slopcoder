@@ -52,6 +52,13 @@ pub struct RemoteError {
     pub error: String,
 }
 
+#[derive(Debug, Clone)]
+pub enum TerminalEvent {
+    Data(Vec<u8>),
+    Closed,
+    Error(String),
+}
+
 impl ConnectedAgent {
     pub async fn request(&self, request: AgentRequest) -> Result<AgentResponse, StateError> {
         let request_id = Uuid::new_v4().to_string();
@@ -101,6 +108,12 @@ impl ConnectedAgent {
             }),
         }
     }
+
+    pub fn send_envelope(&self, envelope: AgentEnvelope) -> Result<(), StateError> {
+        self.outbound_tx
+            .send(envelope)
+            .map_err(|_| StateError::AgentDisconnected)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +135,7 @@ struct AppStateInner {
     host_to_id: HashMap<String, Uuid>,
     task_hosts: HashMap<TaskId, String>,
     event_channels: HashMap<TaskId, broadcast::Sender<AgentEvent>>,
+    terminal_channels: HashMap<Uuid, broadcast::Sender<TerminalEvent>>,
 }
 
 impl AppState {
@@ -134,6 +148,7 @@ impl AppState {
                 host_to_id: HashMap::new(),
                 task_hosts: HashMap::new(),
                 event_channels: HashMap::new(),
+                terminal_channels: HashMap::new(),
             })),
         }
     }
@@ -269,6 +284,38 @@ impl AppState {
             })
             .clone();
         let _ = tx.send(event);
+    }
+
+    pub async fn subscribe_to_terminal(
+        &self,
+        terminal_id: Uuid,
+    ) -> broadcast::Receiver<TerminalEvent> {
+        let mut inner = self.inner.write().await;
+        let tx = inner
+            .terminal_channels
+            .entry(terminal_id)
+            .or_insert_with(|| {
+                let (tx, _) = broadcast::channel(200);
+                tx
+            })
+            .clone();
+        tx.subscribe()
+    }
+
+    pub async fn broadcast_terminal_event(&self, terminal_id: Uuid, event: TerminalEvent) {
+        let mut inner = self.inner.write().await;
+        let tx = inner
+            .terminal_channels
+            .entry(terminal_id)
+            .or_insert_with(|| {
+                let (tx, _) = broadcast::channel(200);
+                tx
+            })
+            .clone();
+        let _ = tx.send(event.clone());
+        if matches!(event, TerminalEvent::Closed | TerminalEvent::Error(_)) {
+            inner.terminal_channels.remove(&terminal_id);
+        }
     }
 }
 

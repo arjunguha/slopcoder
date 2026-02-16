@@ -1,9 +1,8 @@
 //! HTTP routes for the Slopcoder coordinator API.
 
-use crate::state::{AppState, ConnectedAgent, RemoteError, StateError};
+use crate::state::{AppState, ConnectedAgent, RemoteError, StateError, TerminalEvent};
 use futures::future::join_all;
 use futures::{SinkExt, StreamExt};
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
 use slopcoder_core::{
     agent_rpc::{AgentCreateTaskRequest, AgentEnvelope, AgentRequest, AgentResponse},
@@ -12,8 +11,6 @@ use slopcoder_core::{
 };
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::io::{Read, Write};
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::{timeout, Duration};
@@ -919,6 +916,30 @@ async fn handle_agent_socket(ws: WebSocket, state: AppState) {
                 state.set_task_host(task_id, agent.host.clone()).await;
                 state.broadcast_task_event(task_id, event).await;
             }
+            AgentEnvelope::TerminalData { terminal_id, data } => {
+                state
+                    .broadcast_terminal_event(terminal_id, TerminalEvent::Data(data))
+                    .await;
+            }
+            AgentEnvelope::TerminalClosed { terminal_id } => {
+                state
+                    .broadcast_terminal_event(terminal_id, TerminalEvent::Closed)
+                    .await;
+            }
+            AgentEnvelope::TerminalError { terminal_id, error } => {
+                state
+                    .broadcast_terminal_event(terminal_id, TerminalEvent::Error(error))
+                    .await;
+            }
+            AgentEnvelope::TerminalOpen { .. }
+            | AgentEnvelope::TerminalInput { .. }
+            | AgentEnvelope::TerminalResize { .. }
+            | AgentEnvelope::TerminalClose { .. } => {
+                tracing::warn!(
+                    "Ignoring unexpected terminal command envelope from agent '{}'",
+                    agent.host
+                );
+            }
             AgentEnvelope::Hello { .. } | AgentEnvelope::Request { .. } => {
                 tracing::warn!("Ignoring unexpected envelope from agent '{}'", agent.host);
             }
@@ -971,12 +992,6 @@ enum TerminalClientMessage {
     Resize { rows: u16, cols: u16 },
 }
 
-enum PtyCommand {
-    Input(Vec<u8>),
-    Resize { rows: u16, cols: u16 },
-    Shutdown,
-}
-
 async fn handle_terminal_websocket(ws: WebSocket, id: String, state: AppState) {
     let task_id = match parse_task_id(&id) {
         Ok(id) => id,
@@ -986,134 +1001,66 @@ async fn handle_terminal_websocket(ws: WebSocket, id: String, state: AppState) {
         }
     };
 
-    let task = match find_task(&state, task_id).await {
-        Ok(Some((_, task))) => task,
-        Ok(None) => {
-            tracing::warn!("Task not found for terminal websocket: {}", id);
-            return;
-        }
-        Err(e) => {
-            tracing::warn!(
-                "Failed to resolve task for terminal websocket {}: {}",
-                id,
-                e
-            );
-            return;
-        }
+    let agent = match resolve_agent_for_task(&state, task_id).await {
+        Ok(agent) => agent,
+        Err(_) => match find_task(&state, task_id).await {
+            Ok(Some((host, _))) => match state.get_agent_for_host(&host).await {
+                Some(agent) => agent,
+                None => {
+                    tracing::warn!("Task host '{}' is not connected for terminal {}", host, id);
+                    return;
+                }
+            },
+            Ok(None) => {
+                tracing::warn!("Task not found for terminal websocket: {}", id);
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to resolve task host for terminal websocket {}: {}",
+                    id,
+                    e
+                );
+                return;
+            }
+        },
     };
 
-    let cwd = PathBuf::from(task.environment.clone());
-    if !cwd.is_dir() {
+    let terminal_id = Uuid::new_v4();
+    let mut terminal_events = state.subscribe_to_terminal(terminal_id).await;
+    if let Err(e) = agent.send_envelope(AgentEnvelope::TerminalOpen {
+        terminal_id,
+        task_id,
+    }) {
         tracing::warn!(
-            "Terminal cwd does not exist or is not a directory for task {}: {}",
-            task.id,
-            cwd.display()
+            "Failed to send terminal open to host '{}' for task {}: {}",
+            agent.host,
+            task_id,
+            e
         );
         return;
     }
 
-    let pty_system = native_pty_system();
-    let pty_pair = match pty_system.openpty(PtySize {
-        rows: 30,
-        cols: 120,
-        pixel_width: 0,
-        pixel_height: 0,
-    }) {
-        Ok(pair) => pair,
-        Err(e) => {
-            tracing::warn!("Failed to open pty for task {}: {}", task.id, e);
-            return;
-        }
-    };
-
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-    let mut cmd = CommandBuilder::new(shell);
-    cmd.cwd(cwd);
-
-    let mut child = match pty_pair.slave.spawn_command(cmd) {
-        Ok(child) => child,
-        Err(e) => {
-            tracing::warn!("Failed to spawn shell for task {}: {}", task.id, e);
-            return;
-        }
-    };
-    drop(pty_pair.slave);
-
-    let mut pty_reader = match pty_pair.master.try_clone_reader() {
-        Ok(reader) => reader,
-        Err(e) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            tracing::warn!("Failed to clone pty reader for task {}: {}", task.id, e);
-            return;
-        }
-    };
-    let mut pty_writer = match pty_pair.master.take_writer() {
-        Ok(writer) => writer,
-        Err(e) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            tracing::warn!("Failed to get pty writer for task {}: {}", task.id, e);
-            return;
-        }
-    };
-    let pty_master = pty_pair.master;
-
-    let (pty_output_tx, mut pty_output_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    std::thread::spawn(move || {
-        let mut buffer = [0_u8; 8192];
-        loop {
-            match pty_reader.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if pty_output_tx.send(buffer[..n].to_vec()).is_err() {
-                        break;
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => break,
-            }
-        }
-    });
-
-    let (pty_command_tx, pty_command_rx) = std::sync::mpsc::channel::<PtyCommand>();
-    std::thread::spawn(move || {
-        for cmd in pty_command_rx {
-            match cmd {
-                PtyCommand::Input(data) => {
-                    if pty_writer.write_all(&data).is_err() {
-                        break;
-                    }
-                    if pty_writer.flush().is_err() {
-                        break;
-                    }
-                }
-                PtyCommand::Resize { rows, cols } => {
-                    let _ = pty_master.resize(PtySize {
-                        rows,
-                        cols,
-                        pixel_width: 0,
-                        pixel_height: 0,
-                    });
-                }
-                PtyCommand::Shutdown => break,
-            }
-        }
-        let _ = child.kill();
-        let _ = child.wait();
-    });
-
     let (mut ws_tx, mut ws_rx) = ws.split();
-    let pty_command_tx_for_ws = pty_command_tx.clone();
 
     let mut to_ws = tokio::spawn(async move {
-        while let Some(chunk) = pty_output_rx.recv().await {
-            if ws_tx.send(Message::binary(chunk)).await.is_err() {
-                break;
+        while let Ok(event) = terminal_events.recv().await {
+            match event {
+                TerminalEvent::Data(data) => {
+                    if ws_tx.send(Message::binary(data)).await.is_err() {
+                        break;
+                    }
+                }
+                TerminalEvent::Closed => break,
+                TerminalEvent::Error(error) => {
+                    tracing::warn!("Remote terminal error {}: {}", terminal_id, error);
+                    break;
+                }
             }
         }
     });
 
+    let agent_for_input = agent.clone();
     let mut from_ws = tokio::spawn(async move {
         while let Some(incoming) = ws_rx.next().await {
             let Ok(message) = incoming else {
@@ -1124,7 +1071,10 @@ async fn handle_terminal_websocket(ws: WebSocket, id: String, state: AppState) {
             }
 
             if message.is_binary() {
-                let _ = pty_command_tx_for_ws.send(PtyCommand::Input(message.into_bytes()));
+                let _ = agent_for_input.send_envelope(AgentEnvelope::TerminalInput {
+                    terminal_id,
+                    data: message.into_bytes(),
+                });
                 continue;
             }
 
@@ -1138,7 +1088,11 @@ async fn handle_terminal_websocket(ws: WebSocket, id: String, state: AppState) {
             if let Ok(TerminalClientMessage::Resize { rows, cols }) =
                 serde_json::from_str::<TerminalClientMessage>(text)
             {
-                let _ = pty_command_tx_for_ws.send(PtyCommand::Resize { rows, cols });
+                let _ = agent_for_input.send_envelope(AgentEnvelope::TerminalResize {
+                    terminal_id,
+                    rows,
+                    cols,
+                });
             }
         }
     });
@@ -1151,7 +1105,7 @@ async fn handle_terminal_websocket(ws: WebSocket, id: String, state: AppState) {
             to_ws.abort();
         }
     }
-    let _ = pty_command_tx.send(PtyCommand::Shutdown);
+    let _ = agent.send_envelope(AgentEnvelope::TerminalClose { terminal_id });
 }
 
 // ============================================================================
