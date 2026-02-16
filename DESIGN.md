@@ -79,6 +79,8 @@ Persistence is file-based, but now stored **outside** repository working directo
 - Files:
   - `tasks.yaml`
   - `task-<task_id>.jsonl`
+- Archive root: `<worktrees_directory>/.slopcoder-state/archive/<env-slug>/`
+  - `task-<task_id>.jsonl` (moved here when archived or deleted)
 
 Rationale:
 - Keeps environment repositories clean (no metadata files showing up as untracked changes).
@@ -90,7 +92,7 @@ Store behavior:
 - Mark stale `running` tasks as `failed` on restart.
 - Rewrite only affected environment task snapshots.
 
-## 6. Agent-Side Task Creation and Merge
+## 6. Agent-Side Task Creation, Merge, Archive, and Delete
 
 Implemented in `crates/slopagent/src/main.rs`.
 
@@ -107,8 +109,14 @@ Merge rules:
 - Only `workspace_kind == worktree` tasks can be merged.
 - Task worktree must be clean.
 - Environment repo must be clean.
+- Merge availability precheck uses `git merge-tree --write-tree HEAD <merge_branch>`.
 - Merge runs in environment repo directory: `git merge <merge_branch>`.
 - Conflict path aborts merge and returns an error.
+
+Archive/delete rules:
+- `archive` is for `environment` tasks: move `task-<id>.jsonl` to archive directory and remove task from active list.
+- `delete` is for `worktree` tasks: prune the worktree, archive `task-<id>.jsonl`, remove task from active list, and attempt branch cleanup.
+- Non-force prune may fail when modified/untracked files exist; API returns a conflict instructing force prune.
 
 Diff behavior:
 - For worktree tasks, staged diff is against `base_branch`.
@@ -135,6 +143,12 @@ Task response payload now includes:
 - `base_branch` (optional)
 - `merge_branch` (optional)
 
+Task action endpoints:
+- `POST /api/tasks/:id/merge`
+- `GET /api/tasks/:id/merge-status` (returns `can_merge` + reason)
+- `POST /api/tasks/:id/archive`
+- `DELETE /api/tasks/:id?force=true|false`
+
 Environment creation via API:
 - UI provides host + environment name only.
 - Agent creates `<storage_root>/environments/<name>`, initializes a Git repository, and makes an empty initial commit.
@@ -156,7 +170,10 @@ Behavior:
 - `web_search` is currently wired to Codex (`--search`) and ignored for other agents.
 - Prompt textareas in task-creation panes support `Ctrl+Enter` (and `Cmd+Enter`) to submit without clicking.
 - Task list and task header display task `name` (topic).
-- Merge controls are shown only for `worktree` tasks.
+- `environment` tasks show an archive button beside the task title.
+- `worktree` tasks show merge/delete actions (no archive button).
+- Merge action uses server-side merge readiness and is disabled when merge cannot currently succeed.
+- Delete action uses an inline warning dialog (no JS modal) and supports force prune when normal prune fails.
 - Opening a different task conversation now auto-scrolls to the bottom of the transcript.
 - Switching back to the Conversation tab also auto-scrolls the transcript to the newest message.
 - Conversation transcripts now render progressively in chunks (latest-first) to reduce UI lag on long histories.

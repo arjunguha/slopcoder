@@ -53,21 +53,57 @@ pub enum AgentRequest {
     GetTaskDiff { task_id: TaskId },
     InterruptTask { task_id: TaskId },
     MergeTask { task_id: TaskId },
+    GetMergeReadiness { task_id: TaskId },
+    ArchiveTask { task_id: TaskId },
+    DeleteTask { task_id: TaskId, force: bool },
 }
 
 /// Response payloads from agent -> coordinator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentResponse {
-    Environments { environments: Vec<Environment> },
-    Environment { environment: Environment },
-    Branches { branches: Vec<String> },
-    Tasks { tasks: Vec<Task> },
-    Task { task: Option<Task> },
-    CreatedTask { id: TaskId, worktree_path: String },
-    TaskOutput { events: Vec<AgentEvent> },
-    TaskDiff { staged: String, unstaged: String },
-    MergeResult { status: String, message: String },
+    Environments {
+        environments: Vec<Environment>,
+    },
+    Environment {
+        environment: Environment,
+    },
+    Branches {
+        branches: Vec<String>,
+    },
+    Tasks {
+        tasks: Vec<Task>,
+    },
+    Task {
+        task: Option<Task>,
+    },
+    CreatedTask {
+        id: TaskId,
+        worktree_path: String,
+    },
+    TaskOutput {
+        events: Vec<AgentEvent>,
+    },
+    TaskDiff {
+        staged: String,
+        unstaged: String,
+    },
+    MergeResult {
+        status: String,
+        message: String,
+    },
+    MergeReadiness {
+        can_merge: bool,
+        reason: Option<String>,
+    },
+    ArchiveResult {
+        status: String,
+        message: String,
+    },
+    DeleteResult {
+        status: String,
+        message: String,
+    },
     Ack,
 }
 

@@ -341,6 +341,16 @@ impl AppState {
         Ok(())
     }
 
+    pub async fn remove_task(&self, id: TaskId) -> Result<Option<Task>, StateError> {
+        let mut inner = self.inner.write().await;
+        inner.interrupt_channels.remove(&id);
+        inner
+            .tasks
+            .remove(id)
+            .await
+            .map_err(StateError::PersistenceError)
+    }
+
     pub async fn set_task_session_id(
         &self,
         id: TaskId,

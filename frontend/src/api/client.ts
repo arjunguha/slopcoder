@@ -136,6 +136,28 @@ export async function mergeTask(taskId: string): Promise<{ status: string; messa
   });
 }
 
+export async function getMergeStatus(
+  taskId: string
+): Promise<{ can_merge: boolean; reason: string | null }> {
+  return fetchJson(`/api/tasks/${taskId}/merge-status`);
+}
+
+export async function archiveTask(taskId: string): Promise<{ status: string; message: string }> {
+  return fetchJson(`/api/tasks/${taskId}/archive`, {
+    method: "POST",
+  });
+}
+
+export async function deleteTask(
+  taskId: string,
+  force = false
+): Promise<{ status: string; message: string }> {
+  const query = force ? "?force=true" : "";
+  return fetchJson(`/api/tasks/${taskId}${query}`, {
+    method: "DELETE",
+  });
+}
+
 // WebSocket for streaming events
 export function subscribeToTask(
   taskId: string,

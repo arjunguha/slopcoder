@@ -12,7 +12,7 @@ use slopcoder_core::{
 use state::{AppState, CreateEnvironmentError, StateError};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use tokio::fs::{File, OpenOptions};
+use tokio::fs::{copy, create_dir_all, remove_file, rename, File, OpenOptions};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -370,6 +370,9 @@ async fn handle_request(
         AgentRequest::GetTaskDiff { task_id } => get_task_diff(state, task_id).await,
         AgentRequest::InterruptTask { task_id } => interrupt_task(state, task_id).await,
         AgentRequest::MergeTask { task_id } => merge_task(state, task_id).await,
+        AgentRequest::GetMergeReadiness { task_id } => get_merge_readiness(state, task_id).await,
+        AgentRequest::ArchiveTask { task_id } => archive_task(state, task_id).await,
+        AgentRequest::DeleteTask { task_id, force } => delete_task(state, task_id, force).await,
     }
 }
 
@@ -596,26 +599,15 @@ async fn merge_task(state: AppState, task_id: TaskId) -> Result<AgentResponse, R
         return Err(RpcError::new(StatusCode::NOT_FOUND, "Task not found"));
     };
 
-    if task.workspace_kind != TaskWorkspaceKind::Worktree {
-        return Err(RpcError::new(
-            StatusCode::BAD_REQUEST,
-            "Only isolated worktree tasks can be merged",
-        ));
-    }
-
-    if has_unstaged_changes(&task.worktree_path).await {
+    let readiness = evaluate_merge_readiness(&state, &task).await?;
+    if !readiness.can_merge {
         return Err(RpcError::new(
             StatusCode::CONFLICT,
-            "Task has unstaged changes. Please commit or stash them before merging.",
+            readiness
+                .reason
+                .unwrap_or_else(|| "Task cannot be merged right now.".to_string()),
         ));
     }
-
-    let merge_branch = task.merge_branch.as_deref().ok_or_else(|| {
-        RpcError::new(
-            StatusCode::BAD_REQUEST,
-            "Task has no merge branch; only worktree tasks are mergeable",
-        )
-    })?;
 
     let Some(env) = state.find_environment(&task.environment).await else {
         return Err(RpcError::new(
@@ -623,13 +615,12 @@ async fn merge_task(state: AppState, task_id: TaskId) -> Result<AgentResponse, R
             "Environment not found",
         ));
     };
-
-    if has_unstaged_changes(&env.directory).await {
+    let Some(merge_branch) = task.merge_branch.as_deref() else {
         return Err(RpcError::new(
-            StatusCode::CONFLICT,
-            "Environment repository has unstaged changes.",
+            StatusCode::BAD_REQUEST,
+            "Task has no merge branch; only worktree tasks are mergeable",
         ));
-    }
+    };
 
     let merge_output = Command::new("git")
         .args(["merge", merge_branch])
@@ -656,6 +647,288 @@ async fn merge_task(state: AppState, task_id: TaskId) -> Result<AgentResponse, R
             StatusCode::CONFLICT,
             format!("Merge failed (reverted): {}", stdout.trim()),
         ))
+    }
+}
+
+struct MergeReadinessResult {
+    can_merge: bool,
+    reason: Option<String>,
+}
+
+async fn get_merge_readiness(state: AppState, task_id: TaskId) -> Result<AgentResponse, RpcError> {
+    let Some(task) = state.get_task(task_id).await else {
+        return Err(RpcError::new(StatusCode::NOT_FOUND, "Task not found"));
+    };
+
+    let readiness = evaluate_merge_readiness(&state, &task).await?;
+    Ok(AgentResponse::MergeReadiness {
+        can_merge: readiness.can_merge,
+        reason: readiness.reason,
+    })
+}
+
+async fn evaluate_merge_readiness(
+    state: &AppState,
+    task: &Task,
+) -> Result<MergeReadinessResult, RpcError> {
+    if task.workspace_kind != TaskWorkspaceKind::Worktree {
+        return Ok(MergeReadinessResult {
+            can_merge: false,
+            reason: Some("Only isolated worktree tasks can be merged.".to_string()),
+        });
+    }
+
+    if task.is_running() {
+        return Ok(MergeReadinessResult {
+            can_merge: false,
+            reason: Some("Task is still running.".to_string()),
+        });
+    }
+
+    if has_unstaged_changes(&task.worktree_path).await {
+        return Ok(MergeReadinessResult {
+            can_merge: false,
+            reason: Some(
+                "Task worktree has uncommitted or untracked changes. Commit or stash first."
+                    .to_string(),
+            ),
+        });
+    }
+
+    let Some(merge_branch) = task.merge_branch.as_deref() else {
+        return Ok(MergeReadinessResult {
+            can_merge: false,
+            reason: Some("Task has no merge branch.".to_string()),
+        });
+    };
+
+    let Some(env) = state.find_environment(&task.environment).await else {
+        return Ok(MergeReadinessResult {
+            can_merge: false,
+            reason: Some("Environment not found.".to_string()),
+        });
+    };
+
+    if has_unstaged_changes(&env.directory).await {
+        return Ok(MergeReadinessResult {
+            can_merge: false,
+            reason: Some(
+                "Environment repository has uncommitted or untracked changes.".to_string(),
+            ),
+        });
+    }
+
+    let merge_tree = Command::new("git")
+        .args(["merge-tree", "--write-tree", "HEAD", merge_branch])
+        .current_dir(&env.directory)
+        .output()
+        .await
+        .map_err(|e| RpcError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if merge_tree.status.success() {
+        return Ok(MergeReadinessResult {
+            can_merge: true,
+            reason: None,
+        });
+    }
+
+    let stderr = String::from_utf8_lossy(&merge_tree.stderr)
+        .trim()
+        .to_string();
+    let stdout = String::from_utf8_lossy(&merge_tree.stdout)
+        .trim()
+        .to_string();
+    let detail = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        "Merge would conflict.".to_string()
+    };
+
+    Ok(MergeReadinessResult {
+        can_merge: false,
+        reason: Some(format!("Merge precheck failed: {}", detail)),
+    })
+}
+
+async fn archive_task(state: AppState, task_id: TaskId) -> Result<AgentResponse, RpcError> {
+    let Some(task) = state.get_task(task_id).await else {
+        return Err(RpcError::new(StatusCode::NOT_FOUND, "Task not found"));
+    };
+
+    if task.is_running() {
+        return Err(RpcError::new(
+            StatusCode::CONFLICT,
+            "Stop the running task before archiving.",
+        ));
+    }
+
+    let archived_path = archive_task_output(&state, &task).await?;
+    state
+        .remove_task(task_id)
+        .await
+        .map_err(|e| RpcError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let message = match archived_path {
+        Some(path) => format!("Archived conversation to {}", path.display()),
+        None => "Task removed; no conversation file was found to archive.".to_string(),
+    };
+    Ok(AgentResponse::ArchiveResult {
+        status: "archived".to_string(),
+        message,
+    })
+}
+
+async fn delete_task(
+    state: AppState,
+    task_id: TaskId,
+    force: bool,
+) -> Result<AgentResponse, RpcError> {
+    let Some(task) = state.get_task(task_id).await else {
+        return Err(RpcError::new(StatusCode::NOT_FOUND, "Task not found"));
+    };
+
+    if task.workspace_kind != TaskWorkspaceKind::Worktree {
+        return Err(RpcError::new(
+            StatusCode::BAD_REQUEST,
+            "Delete is only supported for isolated worktree tasks",
+        ));
+    }
+    if task.is_running() {
+        return Err(RpcError::new(
+            StatusCode::CONFLICT,
+            "Stop the running task before deleting its worktree.",
+        ));
+    }
+
+    let env = state
+        .find_environment(&task.environment)
+        .await
+        .ok_or_else(|| RpcError::new(StatusCode::INTERNAL_SERVER_ERROR, "Environment not found"))?;
+
+    prune_task_worktree(&task, &env.directory, force).await?;
+
+    if let Some(branch) = task.merge_branch.as_deref() {
+        let branch_args = if force {
+            vec!["branch", "-D", branch]
+        } else {
+            vec!["branch", "-d", branch]
+        };
+        let _ = Command::new("git")
+            .args(branch_args)
+            .current_dir(&env.directory)
+            .output()
+            .await;
+    }
+
+    let archived_path = archive_task_output(&state, &task).await?;
+    state
+        .remove_task(task_id)
+        .await
+        .map_err(|e| RpcError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let message = match archived_path {
+        Some(path) => format!(
+            "Deleted worktree and archived conversation to {}",
+            path.display()
+        ),
+        None => "Deleted worktree. No conversation file was found to archive.".to_string(),
+    };
+
+    Ok(AgentResponse::DeleteResult {
+        status: "deleted".to_string(),
+        message,
+    })
+}
+
+async fn prune_task_worktree(task: &Task, repo_dir: &Path, force: bool) -> Result<(), RpcError> {
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.push("-f");
+    }
+    let worktree_path = task.worktree_path.to_string_lossy().to_string();
+    args.push(&worktree_path);
+
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo_dir)
+        .output()
+        .await
+        .map_err(|e| RpcError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        "unknown git error".to_string()
+    };
+    let lower = detail.to_ascii_lowercase();
+    if !force
+        && (lower.contains("untracked") || lower.contains("modified") || lower.contains("--force"))
+    {
+        return Err(RpcError::new(
+            StatusCode::CONFLICT,
+            format!(
+                "Prune failed: {}. Use force prune to remove it anyway.",
+                detail
+            ),
+        ));
+    }
+
+    Err(RpcError::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("Failed to remove worktree: {}", detail),
+    ))
+}
+
+async fn archive_task_output(state: &AppState, task: &Task) -> Result<Option<PathBuf>, RpcError> {
+    let Some(env_state_dir) = state.get_environment_directory(&task.environment).await else {
+        return Err(RpcError::new(
+            StatusCode::NOT_FOUND,
+            "Environment state directory not found",
+        ));
+    };
+
+    let source = task_output_path(&env_state_dir, task.id);
+    if !source.exists() {
+        return Ok(None);
+    }
+
+    let worktrees_root = state.get_worktrees_directory().await;
+    let archive_dir = worktrees_root
+        .join(".slopcoder-state")
+        .join("archive")
+        .join(sanitize_for_path(&task.environment));
+    create_dir_all(&archive_dir)
+        .await
+        .map_err(|e| RpcError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let destination = archive_dir.join(format!("task-{}.jsonl", task.id));
+    if destination.exists() {
+        remove_file(&destination)
+            .await
+            .map_err(|e| RpcError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+
+    match rename(&source, &destination).await {
+        Ok(_) => Ok(Some(destination)),
+        Err(_) => {
+            copy(&source, &destination)
+                .await
+                .map_err(|e| RpcError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            remove_file(&source)
+                .await
+                .map_err(|e| RpcError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            Ok(Some(destination))
+        }
     }
 }
 
@@ -967,6 +1240,30 @@ async fn has_unstaged_changes(worktree_path: &Path) -> bool {
     }
 
     false
+}
+
+fn sanitize_for_path(value: &str) -> String {
+    let mut out = String::new();
+    for ch in value.chars() {
+        let lower = ch.to_ascii_lowercase();
+        if lower.is_ascii_alphanumeric() || lower == '-' || lower == '_' {
+            out.push(lower);
+        } else {
+            out.push('-');
+        }
+    }
+
+    let compact = out
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+
+    if compact.is_empty() {
+        "env".to_string()
+    } else {
+        compact
+    }
 }
 
 #[allow(dead_code)]

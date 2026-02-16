@@ -296,8 +296,24 @@ fn tasks_routes(
 
     let merge = warp::path!(String / "merge")
         .and(warp::post())
-        .and(with_state(state))
+        .and(with_state(state.clone()))
         .and_then(merge_task);
+
+    let merge_status = warp::path!(String / "merge-status")
+        .and(warp::get())
+        .and(with_state(state.clone()))
+        .and_then(get_merge_status);
+
+    let archive = warp::path!(String / "archive")
+        .and(warp::post())
+        .and(with_state(state.clone()))
+        .and_then(archive_task);
+
+    let delete = warp::path!(String)
+        .and(warp::delete())
+        .and(warp::query::<DeleteTaskQuery>())
+        .and(with_state(state))
+        .and_then(delete_task);
 
     list.or(create)
         .or(get)
@@ -307,6 +323,9 @@ fn tasks_routes(
         .or(interrupt)
         .or(stream)
         .or(merge)
+        .or(merge_status)
+        .or(archive)
+        .or(delete)
 }
 
 #[derive(Serialize)]
@@ -608,6 +627,103 @@ async fn merge_task(id: String, state: AppState) -> Result<impl Reply, Infallibl
 
     match agent.request(AgentRequest::MergeTask { task_id }).await {
         Ok(AgentResponse::MergeResult { status, message }) => Ok(warp::reply::with_status(
+            warp::reply::json(&serde_json::json!({ "status": status, "message": message })),
+            StatusCode::OK,
+        )),
+        Ok(_) => Ok(error_reply(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unexpected response from agent",
+        )),
+        Err(e) => Ok(error_reply(state_error_status(&e), e.to_string())),
+    }
+}
+
+#[derive(Serialize)]
+struct MergeStatusResponse {
+    can_merge: bool,
+    reason: Option<String>,
+}
+
+async fn get_merge_status(id: String, state: AppState) -> Result<impl Reply, Infallible> {
+    let task_id = match parse_task_id(&id) {
+        Ok(id) => id,
+        Err(reply) => return Ok(reply),
+    };
+
+    let agent = match resolve_agent_for_task(&state, task_id).await {
+        Ok(agent) => agent,
+        Err(e) => return Ok(error_reply(state_error_status(&e), e.to_string())),
+    };
+
+    match agent
+        .request(AgentRequest::GetMergeReadiness { task_id })
+        .await
+    {
+        Ok(AgentResponse::MergeReadiness { can_merge, reason }) => Ok(warp::reply::with_status(
+            warp::reply::json(&MergeStatusResponse { can_merge, reason }),
+            StatusCode::OK,
+        )),
+        Ok(_) => Ok(error_reply(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unexpected response from agent",
+        )),
+        Err(e) => Ok(error_reply(state_error_status(&e), e.to_string())),
+    }
+}
+
+async fn archive_task(id: String, state: AppState) -> Result<impl Reply, Infallible> {
+    let task_id = match parse_task_id(&id) {
+        Ok(id) => id,
+        Err(reply) => return Ok(reply),
+    };
+
+    let agent = match resolve_agent_for_task(&state, task_id).await {
+        Ok(agent) => agent,
+        Err(e) => return Ok(error_reply(state_error_status(&e), e.to_string())),
+    };
+
+    match agent.request(AgentRequest::ArchiveTask { task_id }).await {
+        Ok(AgentResponse::ArchiveResult { status, message }) => Ok(warp::reply::with_status(
+            warp::reply::json(&serde_json::json!({ "status": status, "message": message })),
+            StatusCode::OK,
+        )),
+        Ok(_) => Ok(error_reply(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unexpected response from agent",
+        )),
+        Err(e) => Ok(error_reply(state_error_status(&e), e.to_string())),
+    }
+}
+
+#[derive(Deserialize)]
+struct DeleteTaskQuery {
+    #[serde(default)]
+    force: bool,
+}
+
+async fn delete_task(
+    id: String,
+    query: DeleteTaskQuery,
+    state: AppState,
+) -> Result<impl Reply, Infallible> {
+    let task_id = match parse_task_id(&id) {
+        Ok(id) => id,
+        Err(reply) => return Ok(reply),
+    };
+
+    let agent = match resolve_agent_for_task(&state, task_id).await {
+        Ok(agent) => agent,
+        Err(e) => return Ok(error_reply(state_error_status(&e), e.to_string())),
+    };
+
+    match agent
+        .request(AgentRequest::DeleteTask {
+            task_id,
+            force: query.force,
+        })
+        .await
+    {
+        Ok(AgentResponse::DeleteResult { status, message }) => Ok(warp::reply::with_status(
             warp::reply::json(&serde_json::json!({ "status": status, "message": message })),
             StatusCode::OK,
         )),

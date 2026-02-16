@@ -20,6 +20,9 @@ import {
   subscribeToTask,
   getTaskDiff,
   mergeTask,
+  getMergeStatus,
+  archiveTask,
+  deleteTask,
 } from "../api/client";
 import {
   agentSupportsWebSearch,
@@ -166,7 +169,12 @@ function CompletedItemRow(props: { item: CompletedItem }) {
   );
 }
 
-function TaskPane(props: { taskId: string; activeTab: () => RightTab; hideDiff?: boolean }) {
+function TaskPane(props: {
+  taskId: string;
+  activeTab: () => RightTab;
+  hideDiff?: boolean;
+  onTaskRemoved: () => void;
+}) {
   const [task, { refetch: refetchTask }] = createResource(() => props.taskId, getTask);
   const [persistedOutput, { refetch: refetchOutput }] = createResource(
     () => props.taskId,
@@ -177,6 +185,19 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab; hideDiff?:
     async (id) => {
       if (!id) return null;
       return getTaskDiff(id);
+    }
+  );
+  const [mergeStatus, { refetch: refetchMergeStatus }] = createResource(
+    () => {
+      const currentTask = taskData();
+      if (!currentTask || currentTask.workspace_kind !== "worktree") {
+        return null;
+      }
+      return currentTask.id;
+    },
+    async (id) => {
+      if (!id) return null;
+      return getMergeStatus(id);
     }
   );
   const taskData = createMemo(() => task.latest ?? task());
@@ -197,10 +218,15 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab; hideDiff?:
   const [prompt, setPrompt] = createSignal("");
   const [sending, setSending] = createSignal(false);
   const [merging, setMerging] = createSignal(false);
+  const [archiving, setArchiving] = createSignal(false);
+  const [deleting, setDeleting] = createSignal(false);
   const [error, setError] = createSignal("");
-  const [mergeMessage, setMergeMessage] = createSignal<{ type: "success" | "error"; text: string } | null>(null);
+  const [taskMessage, setTaskMessage] = createSignal<{ type: "success" | "error"; text: string } | null>(null);
   const [pendingInitialScroll, setPendingInitialScroll] = createSignal(true);
+  const [actionDialog, setActionDialog] = createSignal<"merge" | "delete" | null>(null);
+  const [showForcePrune, setShowForcePrune] = createSignal(false);
   const taskStatus = createMemo(() => taskData()?.status ?? "pending");
+  const mergeReady = createMemo(() => mergeStatus.latest ?? mergeStatus());
 
   let outputRef: HTMLDivElement | undefined;
   let promptRef: HTMLTextAreaElement | undefined;
@@ -231,6 +257,9 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab; hideDiff?:
     setLiveEvents([]);
     setPendingInitialScroll(true);
     setRenderedEventCount(INITIAL_EVENT_RENDER_COUNT);
+    setTaskMessage(null);
+    setActionDialog(null);
+    setShowForcePrune(false);
   });
 
   createEffect(() => {
@@ -293,6 +322,15 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab; hideDiff?:
     }
   });
 
+  createEffect(() => {
+    taskStatus();
+    const currentTask = taskData();
+    if (!currentTask || currentTask.workspace_kind !== "worktree") {
+      return;
+    }
+    refetchMergeStatus();
+  });
+
   const sendFollowup = async (e: Event) => {
     e.preventDefault();
     if (!prompt().trim() || sending()) return;
@@ -311,6 +349,71 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab; hideDiff?:
     }
   };
 
+  const executeMerge = async () => {
+    if (!taskData() || merging()) return;
+    setMerging(true);
+    setTaskMessage(null);
+    try {
+      const res = await mergeTask(taskData()!.id);
+      setTaskMessage({ type: "success", text: res.message });
+      setActionDialog(null);
+      await refetchTask();
+      await refetchMergeStatus();
+      if (!props.hideDiff) {
+        refetchDiff();
+      }
+    } catch (err) {
+      setTaskMessage({
+        type: "error",
+        text: err instanceof Error ? err.message : "Merge failed",
+      });
+      await refetchMergeStatus();
+    } finally {
+      setMerging(false);
+    }
+  };
+
+  const executeArchive = async () => {
+    if (!taskData() || archiving()) return;
+    setArchiving(true);
+    setTaskMessage(null);
+    try {
+      const res = await archiveTask(taskData()!.id);
+      setTaskMessage({ type: "success", text: res.message });
+      props.onTaskRemoved();
+    } catch (err) {
+      setTaskMessage({
+        type: "error",
+        text: err instanceof Error ? err.message : "Archive failed",
+      });
+    } finally {
+      setArchiving(false);
+    }
+  };
+
+  const executeDelete = async (force: boolean) => {
+    if (!taskData() || deleting()) return;
+    setDeleting(true);
+    setTaskMessage(null);
+    try {
+      const res = await deleteTask(taskData()!.id, force);
+      setTaskMessage({ type: "success", text: res.message });
+      setActionDialog(null);
+      setShowForcePrune(false);
+      props.onTaskRemoved();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Delete failed";
+      setTaskMessage({ type: "error", text: message });
+      const lower = message.toLowerCase();
+      if (!force && (lower.includes("force prune") || lower.includes("untracked"))) {
+        setShowForcePrune(true);
+        setActionDialog("delete");
+      }
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
     <div class="h-full flex flex-col min-h-0">
       <Show when={task.loading && !taskData()}>
@@ -324,52 +427,142 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab; hideDiff?:
       <Show when={taskData()}>
         <div class="mb-4 flex items-center justify-between gap-3">
           <div>
-            <div class="text-xl font-bold text-gray-900 dark:text-gray-100">{taskData()!.name}</div>
+            <div class="flex items-center gap-2">
+              <div class="text-xl font-bold text-gray-900 dark:text-gray-100">{taskData()!.name}</div>
+              <Show when={taskData()!.workspace_kind === "environment"}>
+                <button
+                  type="button"
+                  disabled={archiving() || taskData()!.status === "running"}
+                  onClick={executeArchive}
+                  class="rounded-md border border-gray-300 dark:border-gray-600 px-2 py-1 text-sm hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Archive conversation"
+                >
+                  📁
+                </button>
+              </Show>
+            </div>
             <div class="text-xs text-gray-500 dark:text-gray-400">
               {taskData()!.host}/{taskData()!.environment} • {taskData()!.workspace_kind} • agent: {taskData()!.agent}
             </div>
           </div>
           <div class="flex items-center gap-2">
             <Show when={taskData()!.workspace_kind === "worktree"}>
-              <button
-                disabled={merging() || taskData()!.status === "running"}
-                onClick={async () => {
-                  if (!confirm(`Merge ${taskData()!.merge_branch || taskData()!.name} into ${taskData()!.base_branch || "current"}?`)) return;
-                  setMerging(true);
-                  setMergeMessage(null);
-                  try {
-                    const res = await mergeTask(taskData()!.id);
-                    setMergeMessage({ type: "success", text: res.message });
-                    if (!props.hideDiff) {
-                      refetchDiff();
-                    }
-                  } catch (err) {
-                    setMergeMessage({
-                      type: "error",
-                      text: err instanceof Error ? err.message : "Merge failed",
-                    });
-                  } finally {
-                    setMerging(false);
-                  }
-                }}
-                class="rounded-md bg-purple-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {merging() ? "Merging..." : "Merge"}
-              </button>
+              <div class="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={merging() || deleting() || taskData()!.status === "running" || !mergeReady()?.can_merge}
+                  onClick={() => setActionDialog("merge")}
+                  class="rounded-md bg-purple-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={mergeReady()?.reason ?? "Merge into base branch"}
+                >
+                  {merging() ? "Merging..." : "Merge"}
+                </button>
+                <button
+                  type="button"
+                  disabled={merging() || deleting() || taskData()!.status === "running"}
+                  onClick={() => {
+                    setShowForcePrune(false);
+                    setActionDialog("delete");
+                  }}
+                  class="rounded-md border border-red-400 px-3 py-1.5 text-sm font-medium text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Delete worktree task"
+                >
+                  {deleting() ? "Deleting..." : "Delete"}
+                </button>
+              </div>
             </Show>
             <StatusBadge status={taskData()!.status} />
           </div>
         </div>
 
-        <Show when={mergeMessage()}>
+        <Show when={taskData()!.workspace_kind === "worktree" && mergeReady()?.reason && !mergeReady()?.can_merge}>
+          <div class="mb-3 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-100 dark:bg-amber-900/40 p-3 text-sm text-amber-800 dark:text-amber-200">
+            {mergeReady()!.reason}
+          </div>
+        </Show>
+
+        <Show when={actionDialog() === "merge"}>
+          <div class="mb-3 rounded-lg border border-purple-300 dark:border-purple-700 bg-purple-50 dark:bg-purple-950/30 p-3">
+            <div class="text-sm font-medium text-purple-800 dark:text-purple-200">
+              Merge <span class="font-mono">{taskData()!.merge_branch || taskData()!.name}</span> into{" "}
+              <span class="font-mono">{taskData()!.base_branch || "current"}</span>?
+            </div>
+            <Show when={mergeReady()?.reason && !mergeReady()?.can_merge}>
+              <div class="mt-2 text-sm text-amber-700 dark:text-amber-300">{mergeReady()!.reason}</div>
+            </Show>
+            <div class="mt-3 flex gap-2">
+              <button
+                type="button"
+                disabled={merging() || !mergeReady()?.can_merge}
+                onClick={executeMerge}
+                class="rounded-md bg-purple-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Confirm Merge
+              </button>
+              <button
+                type="button"
+                onClick={() => setActionDialog(null)}
+                class="rounded-md border border-gray-300 dark:border-gray-600 px-3 py-1.5 text-sm hover:bg-gray-100 dark:hover:bg-gray-800"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </Show>
+
+        <Show when={actionDialog() === "delete"}>
+          <div class="mb-3 rounded-lg border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-950/30 p-3">
+            <div class="text-sm font-medium text-red-800 dark:text-red-200">
+              Delete this worktree task?
+            </div>
+            <div class="mt-2 text-sm text-red-700 dark:text-red-300">
+              This prunes the isolated worktree and removes the task from the active list. The conversation log is still archived.
+            </div>
+            <div class="mt-2 text-xs text-red-600 dark:text-red-400">
+              Prune can fail when untracked or modified files exist.
+            </div>
+            <div class="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={deleting()}
+                onClick={() => executeDelete(false)}
+                class="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Confirm Delete
+              </button>
+              <Show when={showForcePrune()}>
+                <button
+                  type="button"
+                  disabled={deleting()}
+                  onClick={() => executeDelete(true)}
+                  class="rounded-md border border-red-500 px-3 py-1.5 text-sm font-medium text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Force Prune
+                </button>
+              </Show>
+              <button
+                type="button"
+                onClick={() => {
+                  setActionDialog(null);
+                  setShowForcePrune(false);
+                }}
+                class="rounded-md border border-gray-300 dark:border-gray-600 px-3 py-1.5 text-sm hover:bg-gray-100 dark:hover:bg-gray-800"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </Show>
+
+        <Show when={taskMessage()}>
           <div
             class={`mb-3 rounded-lg border p-3 text-sm ${
-              mergeMessage()!.type === "success"
+              taskMessage()!.type === "success"
                 ? "border-green-300 dark:border-green-700 bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-200"
                 : "border-red-300 dark:border-red-700 bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-200"
             }`}
           >
-            {mergeMessage()!.text}
+            {taskMessage()!.text}
           </div>
         </Show>
 
@@ -1013,6 +1206,14 @@ export default function Workspace() {
                 taskId={(mode() as { kind: "task"; taskId: string }).taskId}
                 activeTab={tab}
                 hideDiff={isMobile()}
+                onTaskRemoved={() => {
+                  refetchTasks();
+                  const current = mode();
+                  if (current.kind === "task" && current.taskId === selectedTaskId()) {
+                    setMode({ kind: "new-environment" });
+                    setTab("conversation");
+                  }
+                }}
               />
             </Show>
           </div>
