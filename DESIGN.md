@@ -174,6 +174,7 @@ Behavior:
 - `worktree` tasks show merge/delete actions (no archive button).
 - Merge action uses server-side merge readiness and is disabled when merge cannot currently succeed.
 - Delete action uses an inline warning dialog (no JS modal) and supports force prune when normal prune fails.
+- Unused legacy `frontend/src/components/TaskDetail.tsx` has been removed; `Workspace.tsx` is the only task conversation UI.
 - Task detail reactive resources must not reference `taskData` before it is initialized (prevents runtime TDZ errors when opening tasks).
 - Opening a different task conversation now auto-scrolls to the bottom of the transcript.
 - Switching back to the Conversation tab also auto-scrolls the transcript to the newest message.
