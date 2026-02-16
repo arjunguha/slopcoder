@@ -187,6 +187,7 @@ function TaskPane(props: {
       return getTaskDiff(id);
     }
   );
+  const taskData = createMemo(() => task.latest ?? task());
   const [mergeStatus, { refetch: refetchMergeStatus }] = createResource(
     () => {
       const currentTask = taskData();
@@ -200,7 +201,6 @@ function TaskPane(props: {
       return getMergeStatus(id);
     }
   );
-  const taskData = createMemo(() => task.latest ?? task());
   const persistedEvents = createMemo(() => persistedOutput.latest ?? persistedOutput() ?? []);
   const diffData = createMemo(() => diff.latest ?? diff());
 
