@@ -155,6 +155,9 @@ Behavior:
 - Task list and task header display task `name` (topic).
 - Merge controls are shown only for `worktree` tasks.
 - Opening a different task conversation now auto-scrolls to the bottom of the transcript.
+- Switching back to the Conversation tab also auto-scrolls the transcript to the newest message.
+- Conversation transcripts now render progressively in chunks (latest-first) to reduce UI lag on long histories.
+- Scrolling to the top of the transcript incrementally reveals older events.
 - Live conversation streaming avoids subscription churn during task polling to reduce update flicker.
 
 ## 9. Testing

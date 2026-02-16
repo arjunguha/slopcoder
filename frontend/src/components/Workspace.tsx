@@ -38,6 +38,8 @@ type RightMode =
   | { kind: "task"; taskId: string };
 
 type RightTab = "conversation" | "diff";
+const INITIAL_EVENT_RENDER_COUNT = 120;
+const EVENT_RENDER_CHUNK_SIZE = 120;
 
 function basenameFromPath(path: string): string {
   const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -183,6 +185,15 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab; hideDiff?:
 
   const [liveEvents, setLiveEvents] = createSignal<AgentEvent[]>([]);
   const allEvents = createMemo(() => [...persistedEvents(), ...liveEvents()]);
+  const [renderedEventCount, setRenderedEventCount] = createSignal(INITIAL_EVENT_RENDER_COUNT);
+  const visibleEvents = createMemo(() => {
+    const events = allEvents();
+    const count = renderedEventCount();
+    if (count >= events.length) {
+      return events;
+    }
+    return events.slice(events.length - count);
+  });
   const [prompt, setPrompt] = createSignal("");
   const [sending, setSending] = createSignal(false);
   const [merging, setMerging] = createSignal(false);
@@ -198,11 +209,36 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab; hideDiff?:
       outputRef.scrollTop = outputRef.scrollHeight;
     }
   };
+  const revealOlderEvents = () => {
+    const totalEvents = allEvents().length;
+    if (renderedEventCount() >= totalEvents) {
+      return;
+    }
+
+    const previousHeight = outputRef?.scrollHeight ?? 0;
+    setRenderedEventCount((prev) => Math.min(totalEvents, prev + EVENT_RENDER_CHUNK_SIZE));
+    if (outputRef) {
+      requestAnimationFrame(() => {
+        if (!outputRef) return;
+        const nextHeight = outputRef.scrollHeight;
+        outputRef.scrollTop += nextHeight - previousHeight;
+      });
+    }
+  };
 
   createEffect(() => {
     props.taskId;
     setLiveEvents([]);
     setPendingInitialScroll(true);
+    setRenderedEventCount(INITIAL_EVENT_RENDER_COUNT);
+  });
+
+  createEffect(() => {
+    const tab = props.activeTab();
+    if (tab !== "conversation") {
+      return;
+    }
+    requestAnimationFrame(scrollOutputToBottom);
   });
 
   createEffect(() => {
@@ -214,6 +250,18 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab; hideDiff?:
       scrollOutputToBottom();
       setPendingInitialScroll(false);
     });
+  });
+
+  createEffect(() => {
+    const totalEvents = allEvents().length;
+    const rendered = renderedEventCount();
+    if (rendered >= totalEvents) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setRenderedEventCount((prev) => Math.min(totalEvents, prev + EVENT_RENDER_CHUNK_SIZE));
+    }, 16);
+    onCleanup(() => window.clearTimeout(timer));
   });
 
   createEffect(() => {
@@ -329,10 +377,15 @@ function TaskPane(props: { taskId: string; activeTab: () => RightTab; hideDiff?:
           <div class="flex-1 min-h-0 flex flex-col">
             <div
               ref={outputRef}
+              onScroll={() => {
+                if (outputRef && outputRef.scrollTop <= 160) {
+                  revealOlderEvents();
+                }
+              }}
               class="flex-1 min-h-0 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-900 p-4 space-y-3"
             >
-              <For each={allEvents()}>{(event) => <EventRow event={event} />}</For>
-              <Show when={taskData()!.status === "running" && allEvents().length === 0}>
+              <For each={visibleEvents()}>{(event) => <EventRow event={event} />}</For>
+              <Show when={taskData()!.status === "running" && visibleEvents().length === 0}>
                 <div class="text-gray-500 dark:text-gray-400 animate-pulse">Waiting for output...</div>
               </Show>
             </div>
