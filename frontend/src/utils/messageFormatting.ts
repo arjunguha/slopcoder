@@ -3,6 +3,12 @@ export type PrettyPrintResult = {
   clipped: boolean;
 };
 
+export type CommandExecutionPreview = {
+  command: string | null;
+  outputText: string;
+  clipped: boolean;
+};
+
 type PrettyPrintOptions = {
   maxStringLength: number;
   maxArrayLength: number;
@@ -58,6 +64,50 @@ export function summarizeJsonShape(value?: string) {
     return `JSON object (${keys.length} key${keys.length === 1 ? "" : "s"}${preview ? `: ${preview}` : ""})`;
   }
   return `JSON ${typeof parsed}`;
+}
+
+function firstNonEmpty(...values: Array<string | undefined | null>) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim() !== "") {
+      return value;
+    }
+  }
+  return null;
+}
+
+function commandFromArguments(argumentsJson?: string) {
+  if (!argumentsJson || argumentsJson.trim() === "") return null;
+  try {
+    const parsed = JSON.parse(argumentsJson);
+    if (parsed && typeof parsed === "object" && typeof parsed.command === "string" && parsed.command.trim() !== "") {
+      return parsed.command;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export function formatCommandExecutionPreview(
+  item: {
+    command?: string;
+    arguments?: string;
+    aggregated_output?: string;
+    output?: string;
+    stdout?: string;
+    stderr?: string;
+  },
+  maxLines = 5
+): CommandExecutionPreview {
+  const command = firstNonEmpty(item.command, commandFromArguments(item.arguments));
+
+  const stdoutAndStderr = [item.stdout, item.stderr]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .join("\n");
+  const output = firstNonEmpty(item.aggregated_output, item.output, stdoutAndStderr) ?? "";
+  const { text: outputText, clipped } = clipText(output, maxLines, Number.MAX_SAFE_INTEGER);
+
+  return { command, outputText, clipped };
 }
 
 function truncateString(value: string, maxLength: number) {

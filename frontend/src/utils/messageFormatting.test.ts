@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   clipText,
+  formatCommandExecutionPreview,
   prettyPrintJsonString,
   prettyPrintJsonValue,
   summarizeJsonShape,
@@ -54,6 +55,31 @@ const tests: TestCase[] = [
       const result = summarizeJsonShape("[1,2,3]");
       assert.ok(result);
       assert.ok(result?.includes("JSON array"));
+    },
+  },
+  {
+    name: "formatCommandExecutionPreview prefers explicit command and limits output to five lines",
+    run: () => {
+      const result = formatCommandExecutionPreview({
+        command: "git status",
+        aggregated_output: "1\n2\n3\n4\n5\n6",
+      });
+      assert.equal(result.command, "git status");
+      assert.equal(result.outputText, "1\n2\n3\n4\n5");
+      assert.equal(result.clipped, true);
+    },
+  },
+  {
+    name: "formatCommandExecutionPreview parses command from arguments and joins stdout/stderr",
+    run: () => {
+      const result = formatCommandExecutionPreview({
+        arguments: JSON.stringify({ command: "ls -la" }),
+        stdout: "hello",
+        stderr: "world",
+      });
+      assert.equal(result.command, "ls -la");
+      assert.equal(result.outputText, "hello\nworld");
+      assert.equal(result.clipped, false);
     },
   },
 ];

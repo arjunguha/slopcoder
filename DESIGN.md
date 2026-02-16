@@ -181,6 +181,7 @@ Behavior:
 - Conversation transcripts now render progressively in chunks (latest-first) to reduce UI lag on long histories.
 - Scrolling to the top of the transcript incrementally reveals older events.
 - Live conversation streaming avoids subscription churn during task polling to reduce update flicker.
+- `command_execution` transcript items now render as command cards showing the command text and at most the first 5 lines of output (with truncation indicator).
 
 ## 9. Testing
 

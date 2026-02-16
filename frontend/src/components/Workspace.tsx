@@ -34,6 +34,7 @@ import {
 import { DiffViewer } from "./DiffViewer";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import { formatCommandExecutionPreview } from "../utils/messageFormatting";
 
 type RightMode =
   | { kind: "new-environment" }
@@ -158,6 +159,26 @@ function CompletedItemRow(props: { item: CompletedItem }) {
         <pre class="mt-1 text-xs whitespace-pre-wrap overflow-x-auto text-gray-700 dark:text-gray-200">
           {item.output ?? ""}
         </pre>
+      </div>
+    );
+  }
+
+  if (item.type === "command_execution") {
+    const preview = formatCommandExecutionPreview(item);
+    return (
+      <div class="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2">
+        <div class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Command</div>
+        <div class="text-sm text-gray-900 dark:text-gray-100 font-mono">
+          {preview.command ?? "unknown command"}
+        </div>
+        <Show when={preview.outputText}>
+          <pre class="mt-1 text-xs whitespace-pre-wrap overflow-x-auto text-gray-700 dark:text-gray-200">
+            {preview.outputText}
+          </pre>
+        </Show>
+        <Show when={preview.clipped}>
+          <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">Output truncated to 5 lines.</div>
+        </Show>
       </div>
     );
   }
