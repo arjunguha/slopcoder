@@ -50,8 +50,6 @@ async fn main() {
     let mut server_url: Option<String> = None;
     let mut branch_model = "claude-haiku-4-5".to_string();
     let mut host_override: Option<String> = None;
-    let mut worktrees_directory: Option<PathBuf> = None;
-    let mut environments_root: Option<PathBuf> = None;
     let mut repo_root: Option<PathBuf> = None;
     let mut discovery_max_depth: usize = 10;
     let mut discovery_max_repos: usize = 100;
@@ -59,8 +57,6 @@ async fn main() {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--server" | "--coordinator" => server_url = args.next(),
-            "--worktrees" => worktrees_directory = args.next().map(PathBuf::from),
-            "--slop" => environments_root = args.next().map(PathBuf::from),
             "--discover-max-depth" => {
                 if let Some(value) = args.next() {
                     match value.parse::<usize>() {
@@ -108,8 +104,6 @@ Options:\n\
   REPO_ROOT                       Positional root scanned for repositories (required)\n\
   --name HOSTNAME                 Override host label shown in UI\n\
   --branch-model MODEL            Topic naming model (default: claude-haiku-4-5)\n\
-  --worktrees PATH                Directory for task worktrees/state (default: ~/slop_worktrees)\n\
-  --slop PATH                     Root for created envs + auto-discovery (default: ~/slop)\n\
   --discover-max-depth N          Max recursive discovery depth (default: 10)\n\
   --discover-max-repos N          Max discovered repos total (default: 100)"
                 );
@@ -136,16 +130,14 @@ Options:\n\
             std::process::exit(1);
         }
     };
-    let worktrees_directory = worktrees_directory.unwrap_or_else(default_worktrees_directory);
-
     if discovery_max_repos == 0 {
         tracing::error!("--discover-max-repos must be greater than 0");
         std::process::exit(1);
     }
 
     let config = slopcoder_core::environment::EnvironmentConfig::new(
-        worktrees_directory,
-        environments_root,
+        slopcoder_core::environment::EnvironmentConfig::default_worktrees_directory(),
+        None,
         Vec::new(),
     );
 
@@ -156,7 +148,7 @@ Options:\n\
 
     if config.environments_root.exists() && !config.environments_root.is_dir() {
         tracing::error!(
-            "--slop is not a directory: {}",
+            "Environment root is not a directory: {}",
             config.environments_root.display()
         );
         std::process::exit(1);
@@ -247,13 +239,6 @@ fn default_hostname() -> String {
         .and_then(|s| s.into_string().ok())
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "unknown-host".to_string())
-}
-
-fn default_worktrees_directory() -> PathBuf {
-    std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("slop_worktrees")
 }
 
 fn normalize_server_url(input: &str) -> String {

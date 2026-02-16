@@ -93,10 +93,25 @@ impl EnvironmentConfig {
     }
 
     pub fn default_environments_root() -> PathBuf {
+        Self::default_data_root().join("environments")
+    }
+
+    pub fn default_worktrees_directory() -> PathBuf {
+        Self::default_data_root().join("worktrees")
+    }
+
+    fn default_data_root() -> PathBuf {
+        if let Ok(value) = std::env::var("XDG_DATA_HOME") {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed).join("slopcoder");
+            }
+        }
+
         std::env::var("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("."))
-            .join("slop")
+            .join(".local/share/slopcoder")
     }
 }
 
@@ -382,7 +397,22 @@ mod tests {
 
     #[test]
     fn test_default_environments_root() {
+        std::env::remove_var("XDG_DATA_HOME");
         let root = EnvironmentConfig::default_environments_root();
-        assert!(root.ends_with("slop"));
+        assert!(root.ends_with(".local/share/slopcoder/environments"));
+    }
+
+    #[test]
+    fn test_default_roots_respect_xdg_data_home() {
+        std::env::set_var("XDG_DATA_HOME", "/tmp/xdg-data");
+        assert_eq!(
+            EnvironmentConfig::default_worktrees_directory(),
+            PathBuf::from("/tmp/xdg-data/slopcoder/worktrees")
+        );
+        assert_eq!(
+            EnvironmentConfig::default_environments_root(),
+            PathBuf::from("/tmp/xdg-data/slopcoder/environments")
+        );
+        std::env::remove_var("XDG_DATA_HOME");
     }
 }

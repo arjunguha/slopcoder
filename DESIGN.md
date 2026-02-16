@@ -15,12 +15,14 @@ The system has four parts:
 Implemented in `crates/slopcoder-core/src/environment.rs`.
 
 An environment is now a **checked-out Git repository directory** (not a bare repo root).
-`slopagent` configuration is CLI-driven (no `environments.yaml`).
+`slopagent` configuration is CLI-driven for discovery (`REPO_ROOT` + bounds), while
+environment/worktree storage roots are fixed to the XDG data directory.
 
 Semantics:
 - CLI positional `REPO_ROOT` is required and is scanned for repositories.
-- `--worktrees` (default `~/slop_worktrees`) is the parent directory used for isolated task worktrees.
-- `--slop` (default `~/slop`) is used for create-environment and runtime discovery.
+- Storage root is `$XDG_DATA_HOME/slopcoder` (fallback: `~/.local/share/slopcoder`).
+- Worktrees live under `<storage_root>/worktrees`.
+- Create-environment and environment discovery root is `<storage_root>/environments`.
 - Discovery is recursive, bounded (`max_depth` default `10`, `max_repos` default `100`), skips hidden directories,
   and does not descend into directories that are already Git repositories.
 - `slopagent` serves environment lists from an in-memory cache and refreshes discovery in the background on a short interval,
@@ -28,7 +30,7 @@ Semantics:
 - Environment IDs are the directory paths.
 
 Validation:
-- `worktrees_directory` must exist and be a directory.
+- `worktrees_directory` is created at startup if missing, then validated as a directory.
 - Each environment must satisfy `git rev-parse --is-inside-work-tree`.
 
 Core operations:
@@ -135,7 +137,7 @@ Task response payload now includes:
 
 Environment creation via API:
 - UI provides host + environment name only.
-- Agent creates `<environments_root>/<name>`, initializes a Git repository, and makes an empty initial commit.
+- Agent creates `<storage_root>/environments/<name>`, initializes a Git repository, and makes an empty initial commit.
 - Created/discovered environments are listed immediately without local config-file writes.
 - The create-environment screen also captures an initial prompt and immediately creates the first task in the new environment.
 
@@ -145,6 +147,7 @@ Primary UI is `frontend/src/components/Workspace.tsx`.
 
 Behavior:
 - Environment list includes repositories auto-discovered under `environments_root` and optional `repo_root`.
+- Environment list includes repositories auto-discovered under `<storage_root>/environments` and optional `repo_root`.
 - "Create Environment" button appears above the list and opens a host+name form.
 - The create-environment form uses the same centered "Let's Build" visual style and starts the first task immediately after environment creation.
 - New task form no longer asks for base/feature branch.

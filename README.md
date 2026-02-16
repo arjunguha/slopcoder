@@ -17,13 +17,15 @@ source is to run `make all`.
 Slopcoder relies on git worktrees. If you don't know how to use them, you won't
 be able to use Slopcoder.
 
-Each `slopagent` manages repositories local to that host. Configuration is now
-provided via CLI flags: roots to scan for repositories and a shared directory
-for isolated worktrees.
+Each `slopagent` manages repositories local to that host. The positional
+`REPO_ROOT` is scanned for repositories, and Slopcoder-managed data is stored
+under the host's XDG data directory.
 
 Task metadata is stored under:
-- `<worktrees_directory>/.slopcoder-state/<environment-slug>/tasks.yaml`
-- `<worktrees_directory>/.slopcoder-state/<environment-slug>/task-<id>.jsonl`
+- `$XDG_DATA_HOME/slopcoder/worktrees/.slopcoder-state/<environment-slug>/tasks.yaml`
+- `$XDG_DATA_HOME/slopcoder/worktrees/.slopcoder-state/<environment-slug>/task-<id>.jsonl`
+
+If `XDG_DATA_HOME` is unset, Slopcoder uses `~/.local/share/slopcoder`.
 
 When creating a task, you can choose:
 - In-place task: run directly in the environment repository directory.
@@ -31,15 +33,15 @@ When creating a task, you can choose:
   current branch; these are mergeable via the UI/API.
 
 In the UI, "Create Environment" creates a new repository at
-`<environments_root>/<name>` on the selected host and refreshes the list
-immediately. `slopagent` also auto-discovers repositories under
-`environments_root` and optional `repo_root` recursively, with defaults
+`$XDG_DATA_HOME/slopcoder/environments/<name>` on the selected host and refreshes
+the list immediately. `slopagent` also auto-discovers repositories under
+that environments root and optional `repo_root` recursively, with defaults
 `--discover-max-depth 10` and `--discover-max-repos 100`. Discovery skips hidden
 directories and never descends into directories that are already Git repos.
 CLI shape:
 - Positional `REPO_ROOT` is required and has no default.
-- `--worktrees` defaults to `~/slop_worktrees`.
-- `--slop` defaults to `~/slop`.
+- Environments root: `$XDG_DATA_HOME/slopcoder/environments`.
+- Worktrees/state root: `$XDG_DATA_HOME/slopcoder/worktrees`.
 
 Start the coordinator:
 
@@ -56,9 +58,7 @@ Start an agent (local or remote):
 ```bash
 slopagent \
   /path/to/repos \
-  --server ws://127.0.0.1:8080 \
-  --worktrees /path/to/worktrees \
-  --slop /path/to/slop
+  --server ws://127.0.0.1:8080
 ```
 
 `slopagent` always prompts for the connection password in the terminal. You can
@@ -68,7 +68,6 @@ override the host label shown in the UI:
 slopagent \
   /path/to/repos \
   --server ws://127.0.0.1:8080 \
-  --worktrees /path/to/worktrees \
   --name laptop-local
 ```
 

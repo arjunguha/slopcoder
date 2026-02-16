@@ -94,6 +94,7 @@ impl AppState {
         discovery_max_repos: usize,
         branch_model: String,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        tokio::fs::create_dir_all(&config.worktrees_directory).await?;
         if let Err(err) = config.validate_worktrees_directory().await {
             return Err(Box::new(StartupError::WorktreesDirValidation(err)));
         }
