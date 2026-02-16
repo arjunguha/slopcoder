@@ -23,6 +23,8 @@ Semantics:
 - `--slop` (default `~/slop`) is used for create-environment and runtime discovery.
 - Discovery is recursive, bounded (`max_depth` default `10`, `max_repos` default `100`), skips hidden directories,
   and does not descend into directories that are already Git repositories.
+- `slopagent` serves environment lists from an in-memory cache and refreshes discovery in the background on a short interval,
+  so repository scans do not block request handling.
 - Environment IDs are the directory paths.
 
 Validation:
@@ -119,6 +121,8 @@ Coordinator request model:
 - Multi-host fan-out endpoints (environment/task listing and task lookup fallback) query hosts in parallel instead of serially.
 - Per-host coordinator RPC calls use bounded route-level timeouts to keep UI handlers responsive even when one host is slow.
 - Timed-out/disconnected pending RPC entries are explicitly cleaned up in coordinator state.
+- Agent RPC requests are handled concurrently per request ID, so a long-running request (for example, environment discovery)
+  does not block unrelated agent operations on the same connection.
 
 Task creation payload:
 - `host`, `environment`, optional `name`, `use_worktree`, `web_search`, `prompt`, `agent`.

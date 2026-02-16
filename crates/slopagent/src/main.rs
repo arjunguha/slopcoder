@@ -332,21 +332,23 @@ async fn run_connection(
                 request_id,
                 request,
             } => {
-                let response = handle_request(state.clone(), request, out_tx.clone()).await;
-                let outgoing = match response {
-                    Ok(response) => AgentEnvelope::Response {
-                        request_id,
-                        response,
-                    },
-                    Err(err) => AgentEnvelope::Error {
-                        request_id,
-                        status: err.status,
-                        error: err.error,
-                    },
-                };
-                if out_tx.send(outgoing).is_err() {
-                    break;
-                }
+                let state = state.clone();
+                let out_tx = out_tx.clone();
+                tokio::spawn(async move {
+                    let response = handle_request(state, request, out_tx.clone()).await;
+                    let outgoing = match response {
+                        Ok(response) => AgentEnvelope::Response {
+                            request_id,
+                            response,
+                        },
+                        Err(err) => AgentEnvelope::Error {
+                            request_id,
+                            status: err.status,
+                            error: err.error,
+                        },
+                    };
+                    let _ = out_tx.send(outgoing);
+                });
             }
             _ => {
                 tracing::warn!("Ignoring unexpected envelope from coordinator");

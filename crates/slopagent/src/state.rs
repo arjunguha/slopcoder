@@ -5,9 +5,10 @@ use slopcoder_core::{
     task::{Task, TaskId},
     PersistenceError,
 };
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::process::Command;
 use tokio::sync::RwLock;
@@ -74,6 +75,10 @@ struct AppStateInner {
     repo_root: Option<PathBuf>,
     discovery_max_depth: usize,
     discovery_max_repos: usize,
+    cached_environments: Vec<Environment>,
+    env_cache_last_refresh: Instant,
+    env_cache_refresh_in_flight: bool,
+    env_cache_refresh_interval: Duration,
     state_root: PathBuf,
     tasks: PersistentTaskStore,
     interrupt_channels: std::collections::HashMap<TaskId, tokio::sync::oneshot::Sender<()>>,
@@ -119,7 +124,8 @@ impl AppState {
             discovery_max_repos,
         )
         .await;
-        for env in config.environments.iter().chain(discovered.iter()) {
+        let merged_environments = merge_environments(&config.environments, discovered);
+        for env in &merged_environments {
             let env_state_dir = state_root.join(sanitize_for_path(&env.name));
             tokio::fs::create_dir_all(&env_state_dir).await?;
             tasks.register_environment(env.name.clone(), env_state_dir);
@@ -132,6 +138,10 @@ impl AppState {
                 repo_root,
                 discovery_max_depth,
                 discovery_max_repos,
+                cached_environments: merged_environments,
+                env_cache_last_refresh: Instant::now(),
+                env_cache_refresh_in_flight: false,
+                env_cache_refresh_interval: Duration::from_secs(5),
                 state_root,
                 tasks,
                 interrupt_channels: std::collections::HashMap::new(),
@@ -142,27 +152,44 @@ impl AppState {
     }
 
     pub async fn list_environments(&self) -> Vec<Environment> {
-        let inner = self.inner.read().await;
-        let config = inner.config.clone();
-        let repo_root = inner.repo_root.clone();
-        let discovery_max_depth = inner.discovery_max_depth;
-        let discovery_max_repos = inner.discovery_max_repos;
-        drop(inner);
-        let mut by_name = std::collections::BTreeMap::new();
-        for env in config.environments {
-            by_name.insert(env.name.clone(), env);
-        }
-        for env in discover_environments(
-            &config.environments_root,
-            repo_root.as_deref(),
-            discovery_max_depth,
-            discovery_max_repos,
-        )
-        .await
+        let (cached, refresh_args) = {
+            let mut inner = self.inner.write().await;
+            let cached = inner.cached_environments.clone();
+            let now = Instant::now();
+            let should_refresh = !inner.env_cache_refresh_in_flight
+                && now.duration_since(inner.env_cache_last_refresh)
+                    >= inner.env_cache_refresh_interval;
+            let refresh_args = if should_refresh {
+                inner.env_cache_refresh_in_flight = true;
+                Some((
+                    inner.config.environments_root.clone(),
+                    inner.repo_root.clone(),
+                    inner.discovery_max_depth,
+                    inner.discovery_max_repos,
+                ))
+            } else {
+                None
+            };
+            (cached, refresh_args)
+        };
+
+        if let Some((environments_root, repo_root, discovery_max_depth, discovery_max_repos)) =
+            refresh_args
         {
-            by_name.insert(env.name.clone(), env);
+            let state = self.clone();
+            tokio::spawn(async move {
+                let discovered = discover_environments(
+                    &environments_root,
+                    repo_root.as_deref(),
+                    discovery_max_depth,
+                    discovery_max_repos,
+                )
+                .await;
+                state.finish_environment_refresh(discovered).await;
+            });
         }
-        by_name.into_values().collect()
+
+        cached
     }
 
     pub async fn find_environment(&self, name: &str) -> Option<Environment> {
@@ -243,6 +270,7 @@ impl AppState {
         self.ensure_environment_registered(&env.name)
             .await
             .map_err(|e| CreateEnvironmentError::GitInit(e.to_string()))?;
+        self.add_environment_to_cache(env.clone()).await;
         Ok(env)
     }
 
@@ -388,6 +416,43 @@ impl AppState {
             false
         }
     }
+
+    async fn finish_environment_refresh(&self, discovered: Vec<Environment>) {
+        let mut inner = self.inner.write().await;
+        inner.cached_environments = merge_environments(&inner.config.environments, discovered);
+        inner.env_cache_last_refresh = Instant::now();
+        inner.env_cache_refresh_in_flight = false;
+    }
+
+    async fn add_environment_to_cache(&self, environment: Environment) {
+        let mut inner = self.inner.write().await;
+        if inner
+            .cached_environments
+            .iter()
+            .any(|env| env.name == environment.name)
+        {
+            return;
+        }
+        inner.cached_environments.push(environment);
+        inner
+            .cached_environments
+            .sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+        inner.env_cache_last_refresh = Instant::now();
+    }
+}
+
+fn merge_environments(
+    configured: &[Environment],
+    discovered: Vec<Environment>,
+) -> Vec<Environment> {
+    let mut by_name = BTreeMap::new();
+    for env in configured {
+        by_name.insert(env.name.clone(), env.clone());
+    }
+    for env in discovered {
+        by_name.insert(env.name.clone(), env);
+    }
+    by_name.into_values().collect()
 }
 
 async fn discover_environments(
@@ -577,5 +642,37 @@ mod tests {
                 .to_string()
         ));
         assert!(!names.contains(&root.join(".hidden-repo").to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn test_merge_environments_prefers_discovered_and_sorts() {
+        let configured = vec![
+            Environment {
+                name: "z".to_string(),
+                directory: PathBuf::from("/configured/z"),
+            },
+            Environment {
+                name: "a".to_string(),
+                directory: PathBuf::from("/configured/a"),
+            },
+        ];
+        let discovered = vec![
+            Environment {
+                name: "m".to_string(),
+                directory: PathBuf::from("/discovered/m"),
+            },
+            Environment {
+                name: "a".to_string(),
+                directory: PathBuf::from("/discovered/a"),
+            },
+        ];
+
+        let merged = merge_environments(&configured, discovered);
+        let names: Vec<String> = merged.iter().map(|e| e.name.clone()).collect();
+        assert_eq!(
+            names,
+            vec!["a".to_string(), "m".to_string(), "z".to_string()]
+        );
+        assert_eq!(merged[0].directory, PathBuf::from("/discovered/a"));
     }
 }
