@@ -197,3 +197,59 @@ export function subscribeToTask(
     ws.close();
   };
 }
+
+export interface TerminalSession {
+  sendInput: (data: Uint8Array) => void;
+  resize: (rows: number, cols: number) => void;
+  close: () => void;
+}
+
+export function subscribeToTerminal(
+  taskId: string,
+  onData: (data: Uint8Array) => void,
+  onClose?: () => void
+): TerminalSession {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const wsUrl = `${protocol}//${window.location.host}`;
+  const passwordQuery = cachedPassword ? `?password=${encodeURIComponent(cachedPassword)}` : "";
+  const ws = new WebSocket(`${wsUrl}/api/tasks/${taskId}/terminal${passwordQuery}`);
+  ws.binaryType = "arraybuffer";
+  let closedByClient = false;
+
+  ws.onmessage = (event) => {
+    if (event.data instanceof ArrayBuffer) {
+      onData(new Uint8Array(event.data));
+      return;
+    }
+    if (event.data instanceof Blob) {
+      void event.data.arrayBuffer().then((buffer) => onData(new Uint8Array(buffer)));
+    }
+  };
+
+  ws.onclose = () => {
+    if (!closedByClient) {
+      onClose?.();
+    }
+  };
+
+  ws.onerror = (error) => {
+    console.error("Terminal WebSocket error:", error);
+  };
+
+  return {
+    sendInput(data: Uint8Array) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(data);
+      }
+    },
+    resize(rows: number, cols: number) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "resize", rows, cols }));
+      }
+    },
+    close() {
+      closedByClient = true;
+      ws.close();
+    },
+  };
+}

@@ -3,6 +3,7 @@
 use crate::state::{AppState, ConnectedAgent, RemoteError, StateError};
 use futures::future::join_all;
 use futures::{SinkExt, StreamExt};
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
 use slopcoder_core::{
     agent_rpc::{AgentCreateTaskRequest, AgentEnvelope, AgentRequest, AgentResponse},
@@ -11,6 +12,8 @@ use slopcoder_core::{
 };
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::{timeout, Duration};
@@ -294,6 +297,13 @@ fn tasks_routes(
             ws.on_upgrade(move |socket| handle_task_websocket(socket, id, state))
         });
 
+    let terminal = warp::path!(String / "terminal")
+        .and(warp::ws())
+        .and(with_state(state.clone()))
+        .map(|id: String, ws: warp::ws::Ws, state: AppState| {
+            ws.on_upgrade(move |socket| handle_terminal_websocket(socket, id, state))
+        });
+
     let merge = warp::path!(String / "merge")
         .and(warp::post())
         .and(with_state(state.clone()))
@@ -322,6 +332,7 @@ fn tasks_routes(
         .or(diff)
         .or(interrupt)
         .or(stream)
+        .or(terminal)
         .or(merge)
         .or(merge_status)
         .or(archive)
@@ -952,6 +963,195 @@ async fn handle_task_websocket(ws: WebSocket, id: String, state: AppState) {
             break;
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum TerminalClientMessage {
+    Resize { rows: u16, cols: u16 },
+}
+
+enum PtyCommand {
+    Input(Vec<u8>),
+    Resize { rows: u16, cols: u16 },
+    Shutdown,
+}
+
+async fn handle_terminal_websocket(ws: WebSocket, id: String, state: AppState) {
+    let task_id = match parse_task_id(&id) {
+        Ok(id) => id,
+        Err(_) => {
+            tracing::warn!("Invalid task ID in terminal websocket: {}", id);
+            return;
+        }
+    };
+
+    let task = match find_task(&state, task_id).await {
+        Ok(Some((_, task))) => task,
+        Ok(None) => {
+            tracing::warn!("Task not found for terminal websocket: {}", id);
+            return;
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Failed to resolve task for terminal websocket {}: {}",
+                id,
+                e
+            );
+            return;
+        }
+    };
+
+    let cwd = PathBuf::from(task.environment.clone());
+    if !cwd.is_dir() {
+        tracing::warn!(
+            "Terminal cwd does not exist or is not a directory for task {}: {}",
+            task.id,
+            cwd.display()
+        );
+        return;
+    }
+
+    let pty_system = native_pty_system();
+    let pty_pair = match pty_system.openpty(PtySize {
+        rows: 30,
+        cols: 120,
+        pixel_width: 0,
+        pixel_height: 0,
+    }) {
+        Ok(pair) => pair,
+        Err(e) => {
+            tracing::warn!("Failed to open pty for task {}: {}", task.id, e);
+            return;
+        }
+    };
+
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+    let mut cmd = CommandBuilder::new(shell);
+    cmd.cwd(cwd);
+
+    let mut child = match pty_pair.slave.spawn_command(cmd) {
+        Ok(child) => child,
+        Err(e) => {
+            tracing::warn!("Failed to spawn shell for task {}: {}", task.id, e);
+            return;
+        }
+    };
+    drop(pty_pair.slave);
+
+    let mut pty_reader = match pty_pair.master.try_clone_reader() {
+        Ok(reader) => reader,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            tracing::warn!("Failed to clone pty reader for task {}: {}", task.id, e);
+            return;
+        }
+    };
+    let mut pty_writer = match pty_pair.master.take_writer() {
+        Ok(writer) => writer,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            tracing::warn!("Failed to get pty writer for task {}: {}", task.id, e);
+            return;
+        }
+    };
+    let pty_master = pty_pair.master;
+
+    let (pty_output_tx, mut pty_output_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            match pty_reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if pty_output_tx.send(buffer[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+    });
+
+    let (pty_command_tx, pty_command_rx) = std::sync::mpsc::channel::<PtyCommand>();
+    std::thread::spawn(move || {
+        for cmd in pty_command_rx {
+            match cmd {
+                PtyCommand::Input(data) => {
+                    if pty_writer.write_all(&data).is_err() {
+                        break;
+                    }
+                    if pty_writer.flush().is_err() {
+                        break;
+                    }
+                }
+                PtyCommand::Resize { rows, cols } => {
+                    let _ = pty_master.resize(PtySize {
+                        rows,
+                        cols,
+                        pixel_width: 0,
+                        pixel_height: 0,
+                    });
+                }
+                PtyCommand::Shutdown => break,
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    });
+
+    let (mut ws_tx, mut ws_rx) = ws.split();
+    let pty_command_tx_for_ws = pty_command_tx.clone();
+
+    let mut to_ws = tokio::spawn(async move {
+        while let Some(chunk) = pty_output_rx.recv().await {
+            if ws_tx.send(Message::binary(chunk)).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut from_ws = tokio::spawn(async move {
+        while let Some(incoming) = ws_rx.next().await {
+            let Ok(message) = incoming else {
+                break;
+            };
+            if message.is_close() {
+                break;
+            }
+
+            if message.is_binary() {
+                let _ = pty_command_tx_for_ws.send(PtyCommand::Input(message.into_bytes()));
+                continue;
+            }
+
+            if !message.is_text() {
+                continue;
+            }
+
+            let Ok(text) = message.to_str() else {
+                continue;
+            };
+            if let Ok(TerminalClientMessage::Resize { rows, cols }) =
+                serde_json::from_str::<TerminalClientMessage>(text)
+            {
+                let _ = pty_command_tx_for_ws.send(PtyCommand::Resize { rows, cols });
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = (&mut to_ws) => {
+            from_ws.abort();
+        }
+        _ = (&mut from_ws) => {
+            to_ws.abort();
+        }
+    }
+    let _ = pty_command_tx.send(PtyCommand::Shutdown);
 }
 
 // ============================================================================

@@ -32,6 +32,7 @@ import {
   type Task,
 } from "../types";
 import { DiffViewer } from "./DiffViewer";
+import { TerminalPane } from "./TerminalPane";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { formatCommandExecutionPreview } from "../utils/messageFormatting";
@@ -41,7 +42,7 @@ type RightMode =
   | { kind: "new-task"; host: string; environment: string }
   | { kind: "task"; taskId: string };
 
-type RightTab = "conversation" | "diff";
+type RightTab = "conversation" | "diff" | "terminal";
 const INITIAL_EVENT_RENDER_COUNT = 120;
 const EVENT_RENDER_CHUNK_SIZE = 120;
 
@@ -642,6 +643,12 @@ function TaskPane(props: {
             </Show>
           </div>
         </Show>
+
+        <Show when={props.activeTab() === "terminal"}>
+          <div class="flex-1 min-h-0">
+            <TerminalPane taskId={props.taskId} />
+          </div>
+        </Show>
       </Show>
     </div>
   );
@@ -1192,6 +1199,16 @@ export default function Workspace() {
                   }`}
                 >
                   Diff
+                </button>
+                <button
+                  onClick={() => setTab("terminal")}
+                  class={`px-3 py-2 text-sm font-medium ${
+                    tab() === "terminal"
+                      ? "text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400"
+                      : "text-gray-500 dark:text-gray-400"
+                  }`}
+                >
+                  Terminal
                 </button>
               </Show>
             </div>
