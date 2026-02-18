@@ -942,6 +942,7 @@ export default function Workspace() {
   const environmentIds = createMemo(() => environmentsData().map((env) => `${env.host}::${env.name}`));
   const tasksById = createMemo(() => new Map(tasksData().map((task) => [task.id, task])));
   const [expanded, setExpanded] = createSignal<Record<string, boolean>>({});
+  const [hasExpandedRunningTasks, setHasExpandedRunningTasks] = createSignal(false);
   const [mode, setMode] = createSignal<RightMode>({ kind: "new-environment" });
   const [tab, setTab] = createSignal<RightTab>("conversation");
   const [mobileMenuOpen, setMobileMenuOpen] = createSignal(false);
@@ -995,6 +996,35 @@ export default function Workspace() {
     return grouped;
   });
 
+  createEffect(() => {
+    if (hasExpandedRunningTasks() || tasks.loading) {
+      return;
+    }
+
+    const runningEnvironmentIds = new Set(
+      tasksData()
+        .filter((task) => task.status === "running")
+        .map((task) => `${task.host}::${task.environment}`)
+    );
+
+    setExpanded((prev) => {
+      if (runningEnvironmentIds.size === 0) {
+        return prev;
+      }
+      const next = { ...prev };
+      let changed = false;
+      for (const environmentId of runningEnvironmentIds) {
+        if (!next[environmentId]) {
+          next[environmentId] = true;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+
+    setHasExpandedRunningTasks(true);
+  });
+
   const selectedTaskId = createMemo(() => {
     const currentMode = mode();
     return currentMode.kind === "task" ? currentMode.taskId : null;
@@ -1016,7 +1046,7 @@ export default function Workspace() {
             {(hostId) => {
               const host = createMemo(() => hostsById().get(hostId));
               return (
-                <div class="rounded border border-gray-200 dark:border-gray-700 px-2 py-1 text-xs text-gray-700 dark:text-gray-300">
+                <div class="rounded px-2 py-1 text-xs text-gray-700 dark:text-gray-300">
                   <div class="font-medium">{host()?.host}</div>
                   <Show when={host() && host()!.host !== host()!.hostname}>
                     <div class="text-[11px] text-gray-500 dark:text-gray-400">{host()?.hostname}</div>

@@ -163,6 +163,8 @@ Primary UI is `frontend/src/components/Workspace.tsx`.
 Behavior:
 - Environment list includes repositories auto-discovered under `environments_root` and optional `repo_root`.
 - Environment list includes repositories auto-discovered under `<storage_root>/environments` and optional `repo_root`.
+- On initial UI load, any environment with a currently `running` task is auto-expanded so active work is visible in the sidebar.
+- Host entries in the sidebar are shown without bordered cards.
 - "Create Environment" button appears above the list and opens a host+name form.
 - The create-environment form uses the same centered "Let's Build" visual style and starts the first task immediately after environment creation.
 - New task form no longer asks for base/feature branch.
