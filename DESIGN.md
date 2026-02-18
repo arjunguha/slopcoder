@@ -170,6 +170,7 @@ Behavior:
 - `Enable web search` is shown only when the selected agent supports it.
 - `web_search` is currently wired to Codex (`--search`) and ignored for other agents.
 - Prompt textareas in task-creation panes support `Ctrl+Enter` (and `Cmd+Enter`) to submit without clicking.
+- Task conversation follow-up drafts are cached locally per task ID in browser `localStorage`; drafts are not persisted on the server.
 - Task list and task header display task `name` (topic).
 - `environment` tasks show an archive button beside the task title.
 - `worktree` tasks show merge/delete actions (no archive button).
