@@ -36,6 +36,7 @@ import { TerminalPane } from "./TerminalPane";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { formatCommandExecutionPreview } from "../utils/messageFormatting";
+import { getTaskMessageDraft, setTaskMessageDraft } from "../utils/taskMessageDraftCache";
 
 type RightMode =
   | { kind: "new-environment" }
@@ -247,6 +248,7 @@ function TaskPane(props: {
   const [pendingInitialScroll, setPendingInitialScroll] = createSignal(true);
   const [actionDialog, setActionDialog] = createSignal<"merge" | "delete" | null>(null);
   const [showForcePrune, setShowForcePrune] = createSignal(false);
+  const [draftHydratedTaskId, setDraftHydratedTaskId] = createSignal<string | null>(null);
   const taskStatus = createMemo(() => taskData()?.status ?? "pending");
   const mergeReady = createMemo(() => mergeStatus.latest ?? mergeStatus());
 
@@ -275,13 +277,23 @@ function TaskPane(props: {
   };
 
   createEffect(() => {
-    props.taskId;
+    const taskId = props.taskId;
+    setPrompt(getTaskMessageDraft(taskId));
+    setDraftHydratedTaskId(taskId);
     setLiveEvents([]);
     setPendingInitialScroll(true);
     setRenderedEventCount(INITIAL_EVENT_RENDER_COUNT);
     setTaskMessage(null);
     setActionDialog(null);
     setShowForcePrune(false);
+  });
+
+  createEffect(() => {
+    const taskId = props.taskId;
+    if (draftHydratedTaskId() !== taskId) {
+      return;
+    }
+    setTaskMessageDraft(taskId, prompt());
   });
 
   createEffect(() => {
