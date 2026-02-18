@@ -75,7 +75,7 @@ function EventRow(props: { event: AgentEvent }) {
   const e = props.event;
   if (e.type === "prompt.sent") {
     return (
-      <div class="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/30 px-3 py-2">
+      <div class="min-w-0 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/30 px-3 py-2">
         <div class="text-xs uppercase tracking-wide text-blue-700 dark:text-blue-300">Prompt</div>
         <div class="text-sm text-gray-900 dark:text-gray-100 whitespace-pre-wrap">{e.prompt}</div>
       </div>
@@ -125,7 +125,7 @@ function CompletedItemRow(props: { item: CompletedItem }) {
       return DOMPurify.sanitize(typeof parsed === "string" ? parsed : "");
     });
     return (
-      <div class="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2">
+      <div class="min-w-0 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2">
         <div class="text-xs uppercase tracking-wide text-green-700 dark:text-green-300 mb-1">Agent</div>
         <div class="markdown text-sm text-gray-900 dark:text-gray-100" innerHTML={html()} />
       </div>
@@ -142,7 +142,7 @@ function CompletedItemRow(props: { item: CompletedItem }) {
 
   if (item.type === "tool_call") {
     return (
-      <div class="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2">
+      <div class="min-w-0 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2">
         <div class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Tool call</div>
         <div class="text-sm text-gray-900 dark:text-gray-100 font-mono">{item.name ?? "tool"}</div>
         <Show when={item.arguments}>
@@ -156,7 +156,7 @@ function CompletedItemRow(props: { item: CompletedItem }) {
 
   if (item.type === "tool_output") {
     return (
-      <div class="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2">
+      <div class="min-w-0 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2">
         <div class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Tool output</div>
         <pre class="mt-1 text-xs whitespace-pre-wrap overflow-x-auto text-gray-700 dark:text-gray-200">
           {item.output ?? ""}
@@ -168,7 +168,7 @@ function CompletedItemRow(props: { item: CompletedItem }) {
   if (item.type === "command_execution") {
     const preview = formatCommandExecutionPreview(item);
     return (
-      <div class="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2">
+      <div class="min-w-0 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2">
         <div class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Command</div>
         <div class="text-sm text-gray-900 dark:text-gray-100 font-mono">
           {preview.command ?? "unknown command"}
@@ -449,7 +449,7 @@ function TaskPane(props: {
   };
 
   return (
-    <div class="h-full flex flex-col min-h-0">
+    <div class="h-full min-w-0 flex flex-col min-h-0">
       <Show when={task.loading && !taskData()}>
         <div class="text-gray-500 dark:text-gray-400">Loading task...</div>
       </Show>
@@ -601,7 +601,7 @@ function TaskPane(props: {
         </Show>
 
         <Show when={props.activeTab() === "conversation"}>
-          <div class="flex-1 min-h-0 flex flex-col">
+          <div class="flex-1 min-w-0 min-h-0 flex flex-col">
             <div
               ref={outputRef}
               onScroll={() => {
@@ -609,7 +609,7 @@ function TaskPane(props: {
                   revealOlderEvents();
                 }
               }}
-              class="flex-1 min-h-0 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-900 p-4 space-y-3"
+              class="flex-1 min-w-0 min-h-0 overflow-x-auto overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-900 p-4 space-y-3"
             >
               <For each={visibleEvents()}>{(event) => <EventRow event={event} />}</For>
               <Show when={taskData()!.status === "running" && visibleEvents().length === 0}>
@@ -618,19 +618,19 @@ function TaskPane(props: {
             </div>
 
             <Show when={taskData()!.status !== "running"}>
-              <form onSubmit={sendFollowup} class="mt-3 flex gap-2">
+              <form onSubmit={sendFollowup} class="mt-3 flex min-w-0 gap-2">
                 <textarea
                   ref={promptRef}
                   rows={3}
                   value={prompt()}
                   onInput={(e) => setPrompt(e.currentTarget.value)}
                   placeholder="Continue the conversation..."
-                  class="flex-1 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+                  class="min-w-0 flex-1 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
                 />
                 <button
                   type="submit"
                   disabled={!prompt().trim() || sending()}
-                  class="rounded-lg bg-blue-600 px-5 py-2 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="shrink-0 rounded-lg bg-blue-600 px-5 py-2 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {sending() ? "Sending..." : "Send"}
                 </button>
@@ -1218,7 +1218,7 @@ export default function Workspace() {
           </div>
         </Show>
 
-        <main class="p-3 lg:p-5 min-h-0 flex flex-col">
+        <main class="p-3 lg:p-5 min-w-0 min-h-0 flex flex-col">
           <Show when={mode().kind === "task"}>
             <div class="mb-4 hidden lg:flex gap-2 border-b border-gray-200 dark:border-gray-800">
               <button
@@ -1256,7 +1256,7 @@ export default function Workspace() {
             </div>
           </Show>
 
-          <div class="flex-1 min-h-0">
+          <div class="flex-1 min-w-0 min-h-0">
             <Show when={mode().kind === "new-environment"}>
               <NewEnvironmentPane
                 hosts={hostIds()}

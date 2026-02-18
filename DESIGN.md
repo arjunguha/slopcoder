@@ -184,6 +184,8 @@ Behavior:
 - Switching back to the Conversation tab also auto-scrolls the transcript to the newest message.
 - Conversation transcripts now render progressively in chunks (latest-first) to reduce UI lag on long histories.
 - Scrolling to the top of the transcript incrementally reveals older events.
+- Conversation pane constrains message width (`min-w-0`) and enables horizontal scrolling so long unbroken lines (for example, markdown code-fence lines) do not widen the whole page.
+- Follow-up prompt form keeps the send button on-screen by allowing the textarea to shrink and forcing the button to remain non-shrinking.
 - Live conversation streaming avoids subscription churn during task polling to reduce update flicker.
 - `command_execution` transcript items now render as command cards showing the command text and at most the first 5 lines of output (with truncation indicator).
 - Task detail tabs now include `Terminal` beside `Conversation` and `Diff` on desktop.

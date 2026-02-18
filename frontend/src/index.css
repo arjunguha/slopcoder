@@ -8,10 +8,13 @@ body {
 .markdown {
   color: inherit;
   line-height: 1.6;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .markdown p {
   margin: 0 0 0.75rem 0;
+  overflow-wrap: anywhere;
 }
 
 .markdown ul,
@@ -21,6 +24,7 @@ body {
 
 .markdown li {
   margin: 0.25rem 0;
+  overflow-wrap: anywhere;
 }
 
 .markdown h1,
@@ -32,6 +36,7 @@ body {
 }
 
 .markdown pre {
+  max-width: 100%;
   background: #f3f4f6;
   color: #111827;
   padding: 0.75rem;
