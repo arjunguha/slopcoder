@@ -6,7 +6,9 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use slopcoder_core::{
     agent_rpc::{AgentCreateTaskRequest, AgentEnvelope, AgentRequest, AgentResponse},
     anyagent::{resume_anyagent, spawn_anyagent, AgentKind},
-    branch_picker::{fallback_topic_name, pick_task_topic, topic_to_branch_slug},
+    branch_picker::{
+        fallback_topic_name, normalize_task_name, pick_task_topic, topic_to_branch_slug,
+    },
     task::{Task, TaskId, TaskWorkspaceKind},
     AgentEvent,
 };
@@ -662,15 +664,12 @@ async fn create_task(
     };
 
     let task_name = match req.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(name) => name.chars().take(20).collect::<String>(),
+        Some(name) => normalize_task_name(name).unwrap_or_else(|| "task".to_string()),
         None => {
             let model = state.get_branch_model().await;
             pick_task_topic(&req.prompt, &model)
                 .await
                 .unwrap_or_else(|_| fallback_topic_name(&req.prompt))
-                .chars()
-                .take(20)
-                .collect::<String>()
         }
     };
 

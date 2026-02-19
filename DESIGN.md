@@ -64,8 +64,9 @@ Implemented in `crates/slopcoder-core/src/branch_picker.rs`.
 Task names are no longer feature branch names.
 
 Flow:
-- `pick_task_topic(prompt, model)` asks DSPy for a short topic (max 20 chars).
-- On failure, fallback is the first 20 chars of the prompt (`fallback_topic_name`).
+- `pick_task_topic(prompt, model)` asks DSPy for a short topic.
+- Task names are normalized to whole words with a strict `< 25` character limit (max number of words that fit).
+- On failure, fallback uses the first prompt line with the same whole-word `< 25` character rule (`fallback_topic_name`).
 
 For isolated worktrees, merge branches are internal and generated from topic slug + random suffix:
 - Example: `task/fix-login-flow-a1b2c3d4`.

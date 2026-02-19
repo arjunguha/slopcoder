@@ -3,6 +3,9 @@
 use dspy_rs::{configure, example, ChatAdapter, Predict, Predictor, Signature, LM};
 use thiserror::Error;
 
+const TOPIC_MAX_CHARS_EXCLUSIVE: usize = 25;
+const TOPIC_MAX_CHARS: usize = TOPIC_MAX_CHARS_EXCLUSIVE - 1;
+
 #[derive(Debug, Error)]
 pub enum TopicNameError {
     #[error("OPENAI_API_KEY is not set")]
@@ -18,7 +21,7 @@ struct TopicNameSignature {
     /// Task prompt to summarize.
     #[input]
     prompt: String,
-    /// A short topic name for this task, 20 characters max.
+    /// A short topic name for this task that stays under 25 characters.
     #[output]
     topic: String,
 }
@@ -95,7 +98,7 @@ async fn pick_task_topic_with_env(
         .map_err(|e| TopicNameError::LlmFailed(e.to_string()))?;
 
     let raw = result.get("topic", None).as_str().unwrap_or("").to_string();
-    normalize_topic_name(&raw).ok_or(TopicNameError::EmptyTopic)
+    normalize_task_name(&raw).ok_or(TopicNameError::EmptyTopic)
 }
 
 pub fn fallback_topic_name(prompt: &str) -> String {
@@ -105,13 +108,7 @@ pub fn fallback_topic_name(prompt: &str) -> String {
     }
 
     let first_line = trimmed.lines().next().unwrap_or("").trim();
-    let mut topic = first_line.chars().take(20).collect::<String>();
-    topic = topic.trim().to_string();
-    if topic.is_empty() {
-        "task".to_string()
-    } else {
-        topic
-    }
+    normalize_task_name(first_line).unwrap_or_else(|| "task".to_string())
 }
 
 pub fn topic_to_branch_slug(topic: &str) -> String {
@@ -139,7 +136,7 @@ pub fn topic_to_branch_slug(topic: &str) -> String {
     }
 }
 
-fn normalize_topic_name(raw: &str) -> Option<String> {
+pub fn normalize_task_name(raw: &str) -> Option<String> {
     let mut name = raw.trim();
     if name.is_empty() {
         return None;
@@ -160,16 +157,29 @@ fn normalize_topic_name(raw: &str) -> Option<String> {
         return None;
     }
 
-    let mut normalized = words.join(" ");
-    if normalized.len() > 20 {
-        normalized.truncate(20);
-        normalized = normalized.trim().to_string();
+    let mut normalized_words = Vec::new();
+    let mut char_count = 0usize;
+
+    for &word in &words {
+        let word_chars = word.chars().count();
+        let separator_chars = usize::from(!normalized_words.is_empty());
+        if char_count + separator_chars + word_chars < TOPIC_MAX_CHARS_EXCLUSIVE {
+            normalized_words.push(word);
+            char_count += separator_chars + word_chars;
+        } else {
+            break;
+        }
     }
 
-    if normalized.is_empty() {
-        None
+    if normalized_words.is_empty() {
+        let clipped = words[0].chars().take(TOPIC_MAX_CHARS).collect::<String>();
+        if clipped.is_empty() {
+            None
+        } else {
+            Some(clipped)
+        }
     } else {
-        Some(normalized)
+        Some(normalized_words.join(" "))
     }
 }
 
@@ -178,14 +188,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_normalize_topic_name_truncation() {
+    fn test_normalize_task_name_word_limited_under_25_chars() {
         let long_name = "Implement websocket auth and coordinator routing";
-        let normalized = normalize_topic_name(long_name).unwrap();
-        assert_eq!(normalized, "Implement websocket");
-        assert!(normalized.len() <= 20);
+        let normalized = normalize_task_name(long_name).unwrap();
+        assert_eq!(normalized, "Implement websocket auth");
+        assert!(normalized.chars().count() < TOPIC_MAX_CHARS_EXCLUSIVE);
 
         let short_name = "Fix login";
-        let normalized = normalize_topic_name(short_name).unwrap();
+        let normalized = normalize_task_name(short_name).unwrap();
         assert_eq!(normalized, "Fix login");
     }
 
@@ -194,8 +204,15 @@ mod tests {
         assert_eq!(fallback_topic_name(""), "task");
         assert_eq!(
             fallback_topic_name("Build support for isolated worktrees now"),
-            "Build support for is"
+            "Build support for"
         );
+    }
+
+    #[test]
+    fn test_normalize_task_name_long_single_word() {
+        let normalized = normalize_task_name("supercalifragilisticexpialidocious").unwrap();
+        assert_eq!(normalized, "supercalifragilisticexpi");
+        assert!(normalized.chars().count() < TOPIC_MAX_CHARS_EXCLUSIVE);
     }
 
     #[test]
