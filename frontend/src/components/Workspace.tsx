@@ -449,7 +449,7 @@ function TaskPane(props: {
   };
 
   return (
-    <div class="h-full min-w-0 flex flex-col min-h-0">
+    <div class="h-full min-w-0 flex flex-col min-h-0 overflow-hidden">
       <Show when={task.loading && !taskData()}>
         <div class="text-gray-500 dark:text-gray-400">Loading task...</div>
       </Show>
@@ -459,53 +459,55 @@ function TaskPane(props: {
         </div>
       </Show>
       <Show when={taskData()}>
-        <div class="mb-4 flex items-center justify-between gap-3">
-          <div>
-            <div class="flex items-center gap-2">
-              <div class="text-xl font-bold text-gray-900 dark:text-gray-100">{taskData()!.name}</div>
-              <Show when={taskData()!.workspace_kind === "environment"}>
-                <button
-                  type="button"
-                  disabled={archiving() || taskData()!.status === "running"}
-                  onClick={executeArchive}
-                  class="rounded-md border border-gray-300 dark:border-gray-600 px-2 py-1 text-sm hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="Archive conversation"
-                >
-                  📁
-                </button>
-              </Show>
-            </div>
-            <div class="text-xs text-gray-500 dark:text-gray-400">
-              {taskData()!.host}/{taskData()!.environment} • {taskData()!.workspace_kind} • agent: {taskData()!.agent}
-            </div>
-          </div>
-          <div class="flex items-center gap-2">
-            <Show when={taskData()!.workspace_kind === "worktree"}>
+        <div class="sticky top-0 z-20 mb-3 border-b border-gray-200/80 dark:border-gray-800/80 bg-white/95 dark:bg-gray-950/95 pb-3 backdrop-blur supports-[backdrop-filter]:bg-white/80 supports-[backdrop-filter]:dark:bg-gray-950/80">
+          <div class="flex items-center justify-between gap-3">
+            <div>
               <div class="flex items-center gap-2">
-                <button
-                  type="button"
-                  disabled={merging() || deleting() || taskData()!.status === "running" || !mergeReady()?.can_merge}
-                  onClick={() => setActionDialog("merge")}
-                  class="rounded-md bg-purple-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                  title={mergeReady()?.reason ?? "Merge into base branch"}
-                >
-                  {merging() ? "Merging..." : "Merge"}
-                </button>
-                <button
-                  type="button"
-                  disabled={merging() || deleting() || taskData()!.status === "running"}
-                  onClick={() => {
-                    setShowForcePrune(false);
-                    setActionDialog("delete");
-                  }}
-                  class="rounded-md border border-red-400 px-3 py-1.5 text-sm font-medium text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/30 disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="Delete worktree task"
-                >
-                  {deleting() ? "Deleting..." : "Delete"}
-                </button>
+                <div class="text-xl font-bold text-gray-900 dark:text-gray-100">{taskData()!.name}</div>
+                <Show when={taskData()!.workspace_kind === "environment"}>
+                  <button
+                    type="button"
+                    disabled={archiving() || taskData()!.status === "running"}
+                    onClick={executeArchive}
+                    class="rounded-md border border-gray-300 dark:border-gray-600 px-2 py-1 text-sm hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Archive conversation"
+                  >
+                    📁
+                  </button>
+                </Show>
               </div>
-            </Show>
-            <StatusBadge status={taskData()!.status} />
+              <div class="text-xs text-gray-500 dark:text-gray-400">
+                {taskData()!.host}/{taskData()!.environment} • {taskData()!.workspace_kind} • agent: {taskData()!.agent}
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <Show when={taskData()!.workspace_kind === "worktree"}>
+                <div class="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={merging() || deleting() || taskData()!.status === "running" || !mergeReady()?.can_merge}
+                    onClick={() => setActionDialog("merge")}
+                    class="rounded-md bg-purple-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title={mergeReady()?.reason ?? "Merge into base branch"}
+                  >
+                    {merging() ? "Merging..." : "Merge"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={merging() || deleting() || taskData()!.status === "running"}
+                    onClick={() => {
+                      setShowForcePrune(false);
+                      setActionDialog("delete");
+                    }}
+                    class="rounded-md border border-red-400 px-3 py-1.5 text-sm font-medium text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Delete worktree task"
+                  >
+                    {deleting() ? "Deleting..." : "Delete"}
+                  </button>
+                </div>
+              </Show>
+              <StatusBadge status={taskData()!.status} />
+            </div>
           </div>
         </div>
 
@@ -601,7 +603,7 @@ function TaskPane(props: {
         </Show>
 
         <Show when={props.activeTab() === "conversation"}>
-          <div class="flex-1 min-w-0 min-h-0 flex flex-col">
+          <div class="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
             <div
               ref={outputRef}
               onScroll={() => {
@@ -618,26 +620,28 @@ function TaskPane(props: {
             </div>
 
             <Show when={taskData()!.status !== "running"}>
-              <form onSubmit={sendFollowup} class="mt-3 flex min-w-0 gap-2">
-                <textarea
-                  ref={promptRef}
-                  rows={3}
-                  value={prompt()}
-                  onInput={(e) => setPrompt(e.currentTarget.value)}
-                  placeholder="Continue the conversation..."
-                  class="min-w-0 flex-1 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
-                />
-                <button
-                  type="submit"
-                  disabled={!prompt().trim() || sending()}
-                  class="shrink-0 rounded-lg bg-blue-600 px-5 py-2 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {sending() ? "Sending..." : "Send"}
-                </button>
-              </form>
-              <Show when={error()}>
-                <div class="mt-2 text-sm text-red-600 dark:text-red-400">{error()}</div>
-              </Show>
+              <div class="sticky bottom-0 z-20 mt-3 border-t border-gray-200/80 dark:border-gray-800/80 bg-white/95 dark:bg-gray-950/95 pt-3 backdrop-blur supports-[backdrop-filter]:bg-white/80 supports-[backdrop-filter]:dark:bg-gray-950/80">
+                <form onSubmit={sendFollowup} class="flex min-w-0 gap-2">
+                  <textarea
+                    ref={promptRef}
+                    rows={3}
+                    value={prompt()}
+                    onInput={(e) => setPrompt(e.currentTarget.value)}
+                    placeholder="Continue the conversation..."
+                    class="min-w-0 flex-1 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!prompt().trim() || sending()}
+                    class="shrink-0 rounded-lg bg-blue-600 px-5 py-2 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {sending() ? "Sending..." : "Send"}
+                  </button>
+                </form>
+                <Show when={error()}>
+                  <div class="mt-2 text-sm text-red-600 dark:text-red-400">{error()}</div>
+                </Show>
+              </div>
             </Show>
           </div>
         </Show>
@@ -1178,8 +1182,8 @@ export default function Workspace() {
   );
 
   return (
-    <div class="h-screen bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
-      <div class="lg:hidden flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-800">
+    <div class="h-screen h-dvh bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
+      <div class="lg:hidden sticky top-0 z-30 flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-800 bg-white/95 dark:bg-gray-950/95 backdrop-blur supports-[backdrop-filter]:bg-white/80 supports-[backdrop-filter]:dark:bg-gray-950/80">
         <button
           onClick={() => setMobileMenuOpen(true)}
           class="rounded-md border border-gray-300 dark:border-gray-700 px-2 py-1 text-sm"
@@ -1191,7 +1195,7 @@ export default function Workspace() {
         <div class="w-7" />
       </div>
 
-      <div class="h-[calc(100vh-41px)] lg:h-full lg:grid lg:grid-cols-[320px_1fr]">
+      <div class="h-[calc(100vh-41px)] h-[calc(100dvh-41px)] lg:h-full lg:grid lg:grid-cols-[320px_1fr] lg:grid-rows-[minmax(0,1fr)]">
         <aside class="hidden lg:block border-r border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 p-3 overflow-y-auto">
           {sidebarContent()}
         </aside>
@@ -1218,7 +1222,7 @@ export default function Workspace() {
           </div>
         </Show>
 
-        <main class="p-3 lg:p-5 min-w-0 min-h-0 flex flex-col">
+        <main class="h-full p-3 lg:p-5 min-w-0 min-h-0 flex flex-col">
           <Show when={mode().kind === "task"}>
             <div class="mb-4 hidden lg:flex gap-2 border-b border-gray-200 dark:border-gray-800">
               <button
@@ -1256,7 +1260,7 @@ export default function Workspace() {
             </div>
           </Show>
 
-          <div class="flex-1 min-w-0 min-h-0">
+          <div class="h-full flex-1 min-w-0 min-h-0">
             <Show when={mode().kind === "new-environment"}>
               <NewEnvironmentPane
                 hosts={hostIds()}
