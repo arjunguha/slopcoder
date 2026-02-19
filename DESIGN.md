@@ -187,7 +187,7 @@ Behavior:
 - Conversation pane constrains message width (`min-w-0`) and enables horizontal scrolling so long unbroken lines (for example, markdown code-fence lines) do not widen the whole page.
 - Follow-up prompt form keeps the send button on-screen by allowing the textarea to shrink and forcing the button to remain non-shrinking.
 - Live conversation streaming avoids subscription churn during task polling to reduce update flicker.
-- `command_execution` transcript items now render as command cards showing the command text and at most the first 5 lines of output (with truncation indicator).
+- `command_execution` transcript items now render as command cards showing the command text and output preview truncated to 5 lines and 1000 characters (with a generic truncation indicator).
 - Task detail tabs now include `Terminal` beside `Conversation` and `Diff` on desktop.
 - Terminal uses `xterm` over a coordinator websocket that proxies I/O to the owning `slopagent` host.
 - Terminal starts in the selected task workspace directory on that remote host (`worktree_path` for isolated tasks, environment directory for in-place tasks).

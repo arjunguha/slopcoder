@@ -179,7 +179,7 @@ function CompletedItemRow(props: { item: CompletedItem }) {
           </pre>
         </Show>
         <Show when={preview.clipped}>
-          <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">Output truncated to 5 lines.</div>
+          <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">Output truncated.</div>
         </Show>
       </div>
     );

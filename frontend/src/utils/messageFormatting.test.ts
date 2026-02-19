@@ -70,6 +70,17 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "formatCommandExecutionPreview limits output to 1000 characters",
+    run: () => {
+      const result = formatCommandExecutionPreview({
+        command: "cat big.log",
+        aggregated_output: "x".repeat(1200),
+      });
+      assert.equal(result.outputText.length, 1000);
+      assert.equal(result.clipped, true);
+    },
+  },
+  {
     name: "formatCommandExecutionPreview parses command from arguments and joins stdout/stderr",
     run: () => {
       const result = formatCommandExecutionPreview({

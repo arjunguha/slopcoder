@@ -9,6 +9,9 @@ export type CommandExecutionPreview = {
   clipped: boolean;
 };
 
+const DEFAULT_COMMAND_PREVIEW_MAX_LINES = 5;
+const DEFAULT_COMMAND_PREVIEW_MAX_CHARS = 1000;
+
 type PrettyPrintOptions = {
   maxStringLength: number;
   maxArrayLength: number;
@@ -97,7 +100,8 @@ export function formatCommandExecutionPreview(
     stdout?: string;
     stderr?: string;
   },
-  maxLines = 5
+  maxLines = DEFAULT_COMMAND_PREVIEW_MAX_LINES,
+  maxChars = DEFAULT_COMMAND_PREVIEW_MAX_CHARS
 ): CommandExecutionPreview {
   const command = firstNonEmpty(item.command, commandFromArguments(item.arguments));
 
@@ -105,7 +109,7 @@ export function formatCommandExecutionPreview(
     .filter((value): value is string => typeof value === "string" && value.length > 0)
     .join("\n");
   const output = firstNonEmpty(item.aggregated_output, item.output, stdoutAndStderr) ?? "";
-  const { text: outputText, clipped } = clipText(output, maxLines, Number.MAX_SAFE_INTEGER);
+  const { text: outputText, clipped } = clipText(output, maxLines, maxChars);
 
   return { command, outputText, clipped };
 }
