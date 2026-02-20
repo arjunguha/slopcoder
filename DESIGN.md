@@ -130,6 +130,8 @@ Coordinator routes live in `crates/slopcoder-server/src/routes.rs`.
 
 Coordinator request model:
 - Multi-host fan-out endpoints (environment/task listing and task lookup fallback) query hosts in parallel instead of serially.
+- Environment/task list fan-out uses short per-host RPC timeouts (`3s`) plus host-level backoff (`30s`) after timeout/disconnect errors, so one unhealthy host does not repeatedly stall listing for healthy hosts.
+- Backoffed hosts are hidden from host/environment/task listing responses, and create-task/create-environment host selection rejects those temporarily unreachable hosts.
 - Per-host coordinator RPC calls use bounded route-level timeouts to keep UI handlers responsive even when one host is slow.
 - Timed-out/disconnected pending RPC entries are explicitly cleaned up in coordinator state.
 - Agent RPC requests are handled concurrently per request ID, so a long-running request (for example, environment discovery)

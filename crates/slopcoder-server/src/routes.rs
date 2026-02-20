@@ -12,8 +12,8 @@ use slopcoder_core::{
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, Mutex};
-use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 use warp::http::{Method, StatusCode};
 use warp::reject::InvalidQuery;
@@ -23,6 +23,9 @@ use warp::{Filter, Reply};
 #[derive(Debug)]
 struct AuthError;
 impl warp::reject::Reject for AuthError {}
+
+const LIST_REQUEST_TIMEOUT_SECS: u64 = 3;
+const LIST_HOST_BACKOFF_SECS: u64 = 30;
 
 /// Create all API routes.
 pub fn routes(
@@ -118,10 +121,24 @@ struct EnvironmentResponse {
 async fn list_environments(state: AppState) -> Result<impl Reply, Infallible> {
     let agents = state.list_agents().await;
     let mut environments = Vec::new();
+    let mut active_agents = Vec::new();
+    let now = Instant::now();
 
-    let responses = join_all(agents.into_iter().map(|agent| async move {
+    for agent in agents {
+        if state.should_skip_host_list_poll(&agent.host, now).await {
+            continue;
+        }
+        active_agents.push(agent);
+    }
+
+    let responses = join_all(active_agents.into_iter().map(|agent| async move {
         let host = agent.host.clone();
-        let response = request_with_timeout(&agent, AgentRequest::ListEnvironments, 10).await;
+        let response = request_with_timeout(
+            &agent,
+            AgentRequest::ListEnvironments,
+            LIST_REQUEST_TIMEOUT_SECS,
+        )
+        .await;
         (host, response)
     }))
     .await;
@@ -129,6 +146,7 @@ async fn list_environments(state: AppState) -> Result<impl Reply, Infallible> {
     for (host, response) in responses {
         match response {
             Ok(AgentResponse::Environments { environments: envs }) => {
+                state.clear_host_list_backoff(&host).await;
                 for env in envs {
                     environments.push(EnvironmentResponse {
                         host: host.clone(),
@@ -137,8 +155,21 @@ async fn list_environments(state: AppState) -> Result<impl Reply, Infallible> {
                     });
                 }
             }
-            Ok(_) => tracing::warn!("Unexpected response for list environments from {}", host),
-            Err(e) => tracing::warn!("Failed to list environments from host '{}': {}", host, e),
+            Ok(_) => {
+                tracing::warn!("Unexpected response for list environments from {}", host);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to list environments from host '{}': {}", host, e);
+                if should_backoff_host_after_list_error(&e) {
+                    state
+                        .note_host_list_timeout(
+                            &host,
+                            Instant::now(),
+                            Duration::from_secs(LIST_HOST_BACKOFF_SECS),
+                        )
+                        .await;
+                }
+            }
         }
     }
 
@@ -163,14 +194,9 @@ async fn create_environment(
         return Ok(error_reply(StatusCode::BAD_REQUEST, "Host is required"));
     }
 
-    let agent = match state.get_agent_for_host(host).await {
-        Some(agent) => agent,
-        None => {
-            return Ok(error_reply(
-                StatusCode::NOT_FOUND,
-                format!("Host '{}' is not connected", host),
-            ));
-        }
+    let agent = match pick_agent(state.clone(), Some(host)).await {
+        Ok(agent) => agent,
+        Err(e) => return Ok(error_reply(state_error_status(&e), e.to_string())),
     };
 
     match agent
@@ -393,10 +419,20 @@ impl TaskResponse {
 async fn list_tasks(state: AppState) -> Result<impl Reply, Infallible> {
     let agents = state.list_agents().await;
     let mut tasks = Vec::new();
+    let mut active_agents = Vec::new();
+    let now = Instant::now();
 
-    let responses = join_all(agents.into_iter().map(|agent| async move {
+    for agent in agents {
+        if state.should_skip_host_list_poll(&agent.host, now).await {
+            continue;
+        }
+        active_agents.push(agent);
+    }
+
+    let responses = join_all(active_agents.into_iter().map(|agent| async move {
         let host = agent.host.clone();
-        let response = request_with_timeout(&agent, AgentRequest::ListTasks, 10).await;
+        let response =
+            request_with_timeout(&agent, AgentRequest::ListTasks, LIST_REQUEST_TIMEOUT_SECS).await;
         (host, response)
     }))
     .await;
@@ -404,6 +440,7 @@ async fn list_tasks(state: AppState) -> Result<impl Reply, Infallible> {
     for (host, response) in responses {
         match response {
             Ok(AgentResponse::Tasks { tasks: host_tasks }) => {
+                state.clear_host_list_backoff(&host).await;
                 state.record_tasks_for_host(&host, &host_tasks).await;
                 tasks.extend(
                     host_tasks
@@ -411,8 +448,21 @@ async fn list_tasks(state: AppState) -> Result<impl Reply, Infallible> {
                         .map(|task| TaskResponse::from_task(&host, task)),
                 );
             }
-            Ok(_) => tracing::warn!("Unexpected list_tasks response from {}", host),
-            Err(e) => tracing::warn!("Failed to list tasks from '{}': {}", host, e),
+            Ok(_) => {
+                tracing::warn!("Unexpected list_tasks response from {}", host);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to list tasks from '{}': {}", host, e);
+                if should_backoff_host_after_list_error(&e) {
+                    state
+                        .note_host_list_timeout(
+                            &host,
+                            Instant::now(),
+                            Duration::from_secs(LIST_HOST_BACKOFF_SECS),
+                        )
+                        .await;
+                }
+            }
         }
     }
 
@@ -462,14 +512,9 @@ async fn create_task(req: CreateTaskRequest, state: AppState) -> Result<impl Rep
     if host.is_empty() {
         return Ok(error_reply(StatusCode::BAD_REQUEST, "Host is required"));
     }
-    let agent = match state.get_agent_for_host(host).await {
-        Some(agent) => agent,
-        None => {
-            return Ok(error_reply(
-                StatusCode::NOT_FOUND,
-                format!("Host '{}' is not connected", host),
-            ));
-        }
+    let agent = match pick_agent(state.clone(), Some(host)).await {
+        Ok(agent) => agent,
+        Err(e) => return Ok(error_reply(state_error_status(&e), e.to_string())),
     };
 
     let request = AgentCreateTaskRequest {
@@ -1242,7 +1287,11 @@ async fn handle_rejection(err: warp::Rejection) -> Result<impl Reply, Infallible
 }
 
 async fn pick_agent(state: AppState, host: Option<&str>) -> Result<ConnectedAgent, StateError> {
+    let now = Instant::now();
     if let Some(host) = host {
+        if state.should_skip_host_list_poll(host, now).await {
+            return Err(StateError::HostUnavailable(host.to_string()));
+        }
         return state
             .get_agent_for_host(host)
             .await
@@ -1250,9 +1299,16 @@ async fn pick_agent(state: AppState, host: Option<&str>) -> Result<ConnectedAgen
     }
 
     let agents = state.list_agents().await;
-    match agents.len() {
+    let mut available_agents = Vec::new();
+    for agent in agents {
+        if !state.should_skip_host_list_poll(&agent.host, now).await {
+            available_agents.push(agent);
+        }
+    }
+
+    match available_agents.len() {
         0 => Err(StateError::NoAgentsConnected),
-        1 => Ok(agents[0].clone()),
+        1 => Ok(available_agents[0].clone()),
         _ => Err(StateError::HostRequired),
     }
 }
@@ -1261,6 +1317,7 @@ fn state_error_status(err: &StateError) -> StatusCode {
     match err {
         StateError::HostRequired => StatusCode::BAD_REQUEST,
         StateError::HostNotConnected(_) => StatusCode::NOT_FOUND,
+        StateError::HostUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         StateError::NoAgentsConnected => StatusCode::SERVICE_UNAVAILABLE,
         StateError::AgentDisconnected | StateError::AgentTimeout => StatusCode::SERVICE_UNAVAILABLE,
         StateError::RemoteError { status, .. } => {
@@ -1274,10 +1331,16 @@ async fn request_with_timeout(
     request: AgentRequest,
     timeout_seconds: u64,
 ) -> Result<AgentResponse, StateError> {
-    match timeout(Duration::from_secs(timeout_seconds), agent.request(request)).await {
-        Ok(result) => result,
-        Err(_) => Err(StateError::AgentTimeout),
-    }
+    agent
+        .request_with_timeout(request, Duration::from_secs(timeout_seconds))
+        .await
+}
+
+fn should_backoff_host_after_list_error(err: &StateError) -> bool {
+    matches!(
+        err,
+        StateError::AgentDisconnected | StateError::AgentTimeout
+    )
 }
 
 #[cfg(test)]
