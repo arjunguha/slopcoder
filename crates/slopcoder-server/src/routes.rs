@@ -126,7 +126,6 @@ async fn list_environments(state: AppState) -> Result<impl Reply, Infallible> {
 
     for agent in agents {
         if state.should_skip_host_list_poll(&agent.host, now).await {
-            append_cached_environments(&state, &agent.host, &mut environments).await;
             continue;
         }
         active_agents.push(agent);
@@ -148,7 +147,6 @@ async fn list_environments(state: AppState) -> Result<impl Reply, Infallible> {
         match response {
             Ok(AgentResponse::Environments { environments: envs }) => {
                 state.clear_host_list_backoff(&host).await;
-                state.cache_environments_for_host(&host, &envs).await;
                 for env in envs {
                     environments.push(EnvironmentResponse {
                         host: host.clone(),
@@ -159,7 +157,6 @@ async fn list_environments(state: AppState) -> Result<impl Reply, Infallible> {
             }
             Ok(_) => {
                 tracing::warn!("Unexpected response for list environments from {}", host);
-                append_cached_environments(&state, &host, &mut environments).await;
             }
             Err(e) => {
                 tracing::warn!("Failed to list environments from host '{}': {}", host, e);
@@ -172,7 +169,6 @@ async fn list_environments(state: AppState) -> Result<impl Reply, Infallible> {
                         )
                         .await;
                 }
-                append_cached_environments(&state, &host, &mut environments).await;
             }
         }
     }
@@ -198,14 +194,9 @@ async fn create_environment(
         return Ok(error_reply(StatusCode::BAD_REQUEST, "Host is required"));
     }
 
-    let agent = match state.get_agent_for_host(host).await {
-        Some(agent) => agent,
-        None => {
-            return Ok(error_reply(
-                StatusCode::NOT_FOUND,
-                format!("Host '{}' is not connected", host),
-            ));
-        }
+    let agent = match pick_agent(state.clone(), Some(host)).await {
+        Ok(agent) => agent,
+        Err(e) => return Ok(error_reply(state_error_status(&e), e.to_string())),
     };
 
     match agent
@@ -433,7 +424,6 @@ async fn list_tasks(state: AppState) -> Result<impl Reply, Infallible> {
 
     for agent in agents {
         if state.should_skip_host_list_poll(&agent.host, now).await {
-            append_cached_tasks(&state, &agent.host, &mut tasks).await;
             continue;
         }
         active_agents.push(agent);
@@ -452,7 +442,6 @@ async fn list_tasks(state: AppState) -> Result<impl Reply, Infallible> {
             Ok(AgentResponse::Tasks { tasks: host_tasks }) => {
                 state.clear_host_list_backoff(&host).await;
                 state.record_tasks_for_host(&host, &host_tasks).await;
-                state.cache_tasks_for_host(&host, &host_tasks).await;
                 tasks.extend(
                     host_tasks
                         .iter()
@@ -461,7 +450,6 @@ async fn list_tasks(state: AppState) -> Result<impl Reply, Infallible> {
             }
             Ok(_) => {
                 tracing::warn!("Unexpected list_tasks response from {}", host);
-                append_cached_tasks(&state, &host, &mut tasks).await;
             }
             Err(e) => {
                 tracing::warn!("Failed to list tasks from '{}': {}", host, e);
@@ -474,7 +462,6 @@ async fn list_tasks(state: AppState) -> Result<impl Reply, Infallible> {
                         )
                         .await;
                 }
-                append_cached_tasks(&state, &host, &mut tasks).await;
             }
         }
     }
@@ -525,14 +512,9 @@ async fn create_task(req: CreateTaskRequest, state: AppState) -> Result<impl Rep
     if host.is_empty() {
         return Ok(error_reply(StatusCode::BAD_REQUEST, "Host is required"));
     }
-    let agent = match state.get_agent_for_host(host).await {
-        Some(agent) => agent,
-        None => {
-            return Ok(error_reply(
-                StatusCode::NOT_FOUND,
-                format!("Host '{}' is not connected", host),
-            ));
-        }
+    let agent = match pick_agent(state.clone(), Some(host)).await {
+        Ok(agent) => agent,
+        Err(e) => return Ok(error_reply(state_error_status(&e), e.to_string())),
     };
 
     let request = AgentCreateTaskRequest {
@@ -1305,7 +1287,11 @@ async fn handle_rejection(err: warp::Rejection) -> Result<impl Reply, Infallible
 }
 
 async fn pick_agent(state: AppState, host: Option<&str>) -> Result<ConnectedAgent, StateError> {
+    let now = Instant::now();
     if let Some(host) = host {
+        if state.should_skip_host_list_poll(host, now).await {
+            return Err(StateError::HostUnavailable(host.to_string()));
+        }
         return state
             .get_agent_for_host(host)
             .await
@@ -1313,9 +1299,16 @@ async fn pick_agent(state: AppState, host: Option<&str>) -> Result<ConnectedAgen
     }
 
     let agents = state.list_agents().await;
-    match agents.len() {
+    let mut available_agents = Vec::new();
+    for agent in agents {
+        if !state.should_skip_host_list_poll(&agent.host, now).await {
+            available_agents.push(agent);
+        }
+    }
+
+    match available_agents.len() {
         0 => Err(StateError::NoAgentsConnected),
-        1 => Ok(agents[0].clone()),
+        1 => Ok(available_agents[0].clone()),
         _ => Err(StateError::HostRequired),
     }
 }
@@ -1324,6 +1317,7 @@ fn state_error_status(err: &StateError) -> StatusCode {
     match err {
         StateError::HostRequired => StatusCode::BAD_REQUEST,
         StateError::HostNotConnected(_) => StatusCode::NOT_FOUND,
+        StateError::HostUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         StateError::NoAgentsConnected => StatusCode::SERVICE_UNAVAILABLE,
         StateError::AgentDisconnected | StateError::AgentTimeout => StatusCode::SERVICE_UNAVAILABLE,
         StateError::RemoteError { status, .. } => {
@@ -1347,31 +1341,6 @@ fn should_backoff_host_after_list_error(err: &StateError) -> bool {
         err,
         StateError::AgentDisconnected | StateError::AgentTimeout
     )
-}
-
-async fn append_cached_environments(
-    state: &AppState,
-    host: &str,
-    environments: &mut Vec<EnvironmentResponse>,
-) {
-    let cached = state.get_cached_environments_for_host(host).await;
-    for env in cached {
-        environments.push(EnvironmentResponse {
-            host: host.to_string(),
-            name: env.name,
-            directory: env.directory.to_string_lossy().to_string(),
-        });
-    }
-}
-
-async fn append_cached_tasks(state: &AppState, host: &str, tasks: &mut Vec<TaskResponse>) {
-    let cached = state.get_cached_tasks_for_host(host).await;
-    if !cached.is_empty() {
-        state.record_tasks_for_host(host, &cached).await;
-    }
-    for task in &cached {
-        tasks.push(TaskResponse::from_task(host, task));
-    }
 }
 
 #[cfg(test)]
