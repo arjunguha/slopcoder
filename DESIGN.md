@@ -183,7 +183,7 @@ Behavior:
 - Delete action uses an inline warning dialog (no JS modal) and supports force prune when normal prune fails.
 - Unused legacy `frontend/src/components/TaskDetail.tsx` has been removed; `Workspace.tsx` is the only task conversation UI.
 - Task detail reactive resources must not reference `taskData` before it is initialized (prevents runtime TDZ errors when opening tasks).
-- Opening a different task conversation now auto-scrolls to the bottom of the transcript.
+- Opening a different task conversation now waits for transcript loading + incremental chunk rendering to finish, then auto-scrolls to the very bottom.
 - Switching back to the Conversation tab also auto-scrolls the transcript to the newest message.
 - Conversation transcripts now render progressively in chunks (latest-first) to reduce UI lag on long histories.
 - Scrolling to the top of the transcript incrementally reveals older events.

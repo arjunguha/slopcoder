@@ -37,6 +37,7 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { formatCommandExecutionPreview } from "../utils/messageFormatting";
 import { getTaskMessageDraft, setTaskMessageDraft } from "../utils/taskMessageDraftCache";
+import { shouldFinalizeInitialTaskScroll } from "../utils/taskTranscriptScroll";
 
 type RightMode =
   | { kind: "new-environment" }
@@ -305,10 +306,16 @@ function TaskPane(props: {
   });
 
   createEffect(() => {
-    if (!pendingInitialScroll() || props.activeTab() !== "conversation") {
+    const shouldScroll = shouldFinalizeInitialTaskScroll({
+      pendingInitialScroll: pendingInitialScroll(),
+      activeTab: props.activeTab(),
+      persistedOutputLoading: persistedOutput.loading,
+      renderedEventCount: renderedEventCount(),
+      totalEvents: allEvents().length,
+    });
+    if (!shouldScroll) {
       return;
     }
-    allEvents();
     requestAnimationFrame(() => {
       scrollOutputToBottom();
       setPendingInitialScroll(false);
