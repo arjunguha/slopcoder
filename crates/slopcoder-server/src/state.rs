@@ -3,14 +3,16 @@
 use chrono::{DateTime, Utc};
 use slopcoder_core::{
     agent_rpc::{AgentEnvelope, AgentRequest, AgentResponse},
+    environment::Environment,
     task::{Task, TaskId},
     AgentEvent,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
-use tokio::time::{timeout, Duration};
+use tokio::time::timeout;
 use uuid::Uuid;
 
 #[derive(Debug, Error)]
@@ -61,6 +63,15 @@ pub enum TerminalEvent {
 
 impl ConnectedAgent {
     pub async fn request(&self, request: AgentRequest) -> Result<AgentResponse, StateError> {
+        self.request_with_timeout(request, Duration::from_secs(120))
+            .await
+    }
+
+    pub async fn request_with_timeout(
+        &self,
+        request: AgentRequest,
+        timeout_duration: Duration,
+    ) -> Result<AgentResponse, StateError> {
         let request_id = Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel::<PendingResponse>();
 
@@ -82,7 +93,7 @@ impl ConnectedAgent {
             return Err(StateError::AgentDisconnected);
         }
 
-        let result = match timeout(Duration::from_secs(120), rx).await {
+        let result = match timeout(timeout_duration, rx).await {
             Ok(result) => result,
             Err(_) => {
                 let mut pending = self.pending.lock().await;
@@ -134,6 +145,9 @@ struct AppStateInner {
     agents_by_id: HashMap<Uuid, ConnectedAgent>,
     host_to_id: HashMap<String, Uuid>,
     task_hosts: HashMap<TaskId, String>,
+    environment_cache_by_host: HashMap<String, Vec<Environment>>,
+    task_cache_by_host: HashMap<String, Vec<Task>>,
+    list_backoff_until: HashMap<String, Instant>,
     event_channels: HashMap<TaskId, broadcast::Sender<AgentEvent>>,
     terminal_channels: HashMap<Uuid, broadcast::Sender<TerminalEvent>>,
 }
@@ -147,6 +161,9 @@ impl AppState {
                 agents_by_id: HashMap::new(),
                 host_to_id: HashMap::new(),
                 task_hosts: HashMap::new(),
+                environment_cache_by_host: HashMap::new(),
+                task_cache_by_host: HashMap::new(),
+                list_backoff_until: HashMap::new(),
                 event_channels: HashMap::new(),
                 terminal_channels: HashMap::new(),
             })),
@@ -200,6 +217,9 @@ impl AppState {
 
         inner.host_to_id.remove(&agent.host);
         inner.task_hosts.retain(|_, host| host != &agent.host);
+        inner.environment_cache_by_host.remove(&agent.host);
+        inner.task_cache_by_host.remove(&agent.host);
+        inner.list_backoff_until.remove(&agent.host);
         tracing::info!("Agent '{}' disconnected", agent.host);
     }
 
@@ -253,6 +273,63 @@ impl AppState {
         for task in tasks {
             inner.task_hosts.insert(task.id, host.to_string());
         }
+    }
+
+    pub async fn cache_environments_for_host(&self, host: &str, environments: &[Environment]) {
+        self.inner
+            .write()
+            .await
+            .environment_cache_by_host
+            .insert(host.to_string(), environments.to_vec());
+    }
+
+    pub async fn get_cached_environments_for_host(&self, host: &str) -> Vec<Environment> {
+        self.inner
+            .read()
+            .await
+            .environment_cache_by_host
+            .get(host)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub async fn cache_tasks_for_host(&self, host: &str, tasks: &[Task]) {
+        self.inner
+            .write()
+            .await
+            .task_cache_by_host
+            .insert(host.to_string(), tasks.to_vec());
+    }
+
+    pub async fn get_cached_tasks_for_host(&self, host: &str) -> Vec<Task> {
+        self.inner
+            .read()
+            .await
+            .task_cache_by_host
+            .get(host)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub async fn should_skip_host_list_poll(&self, host: &str, now: Instant) -> bool {
+        let inner = self.inner.read().await;
+        inner
+            .list_backoff_until
+            .get(host)
+            .map(|until| now < *until)
+            .unwrap_or(false)
+    }
+
+    pub async fn note_host_list_timeout(&self, host: &str, now: Instant, backoff: Duration) {
+        self.inner
+            .write()
+            .await
+            .list_backoff_until
+            .insert(host.to_string(), now + backoff);
+    }
+
+    pub async fn clear_host_list_backoff(&self, host: &str) {
+        self.inner.write().await.list_backoff_until.remove(host);
     }
 
     pub async fn resolve_agent_for_task(&self, task_id: TaskId) -> Option<ConnectedAgent> {
@@ -330,4 +407,82 @@ fn unique_host_label(base: &str, existing: &HashMap<String, Uuid>) -> String {
         }
     }
     format!("{}-{}", base, Uuid::new_v4().simple())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppState;
+    use slopcoder_core::{
+        anyagent::AgentKind,
+        environment::Environment,
+        task::{Task, TaskWorkspaceKind},
+    };
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn host_list_timeout_backoff_expires() {
+        let state = AppState::new(None, "test-password".to_string());
+        let host = "boa";
+        let now = Instant::now();
+
+        assert!(!state.should_skip_host_list_poll(host, now).await);
+        state
+            .note_host_list_timeout(host, now, Duration::from_secs(5))
+            .await;
+        assert!(
+            state
+                .should_skip_host_list_poll(host, now + Duration::from_secs(4))
+                .await
+        );
+        assert!(
+            !state
+                .should_skip_host_list_poll(host, now + Duration::from_secs(6))
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn caches_environment_snapshots_per_host() {
+        let state = AppState::new(None, "test-password".to_string());
+        let host = "boa";
+        let environments = vec![
+            Environment {
+                name: "alpha".to_string(),
+                directory: PathBuf::from("/tmp/alpha"),
+            },
+            Environment {
+                name: "beta".to_string(),
+                directory: PathBuf::from("/tmp/beta"),
+            },
+        ];
+
+        state.cache_environments_for_host(host, &environments).await;
+        assert_eq!(
+            state.get_cached_environments_for_host(host).await.len(),
+            environments.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn caches_task_snapshots_per_host() {
+        let state = AppState::new(None, "test-password".to_string());
+        let host = "boa";
+        let tasks = vec![Task::new(
+            AgentKind::default(),
+            "environment".to_string(),
+            "task".to_string(),
+            TaskWorkspaceKind::Environment,
+            None,
+            None,
+            false,
+            PathBuf::from("/tmp/workspace"),
+        )];
+
+        state.cache_tasks_for_host(host, &tasks).await;
+        assert_eq!(
+            state.get_cached_tasks_for_host(host).await.len(),
+            tasks.len()
+        );
+    }
 }

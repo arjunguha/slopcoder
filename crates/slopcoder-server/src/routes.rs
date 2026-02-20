@@ -12,8 +12,8 @@ use slopcoder_core::{
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, Mutex};
-use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 use warp::http::{Method, StatusCode};
 use warp::reject::InvalidQuery;
@@ -23,6 +23,9 @@ use warp::{Filter, Reply};
 #[derive(Debug)]
 struct AuthError;
 impl warp::reject::Reject for AuthError {}
+
+const LIST_REQUEST_TIMEOUT_SECS: u64 = 3;
+const LIST_HOST_BACKOFF_SECS: u64 = 30;
 
 /// Create all API routes.
 pub fn routes(
@@ -118,10 +121,25 @@ struct EnvironmentResponse {
 async fn list_environments(state: AppState) -> Result<impl Reply, Infallible> {
     let agents = state.list_agents().await;
     let mut environments = Vec::new();
+    let mut active_agents = Vec::new();
+    let now = Instant::now();
 
-    let responses = join_all(agents.into_iter().map(|agent| async move {
+    for agent in agents {
+        if state.should_skip_host_list_poll(&agent.host, now).await {
+            append_cached_environments(&state, &agent.host, &mut environments).await;
+            continue;
+        }
+        active_agents.push(agent);
+    }
+
+    let responses = join_all(active_agents.into_iter().map(|agent| async move {
         let host = agent.host.clone();
-        let response = request_with_timeout(&agent, AgentRequest::ListEnvironments, 10).await;
+        let response = request_with_timeout(
+            &agent,
+            AgentRequest::ListEnvironments,
+            LIST_REQUEST_TIMEOUT_SECS,
+        )
+        .await;
         (host, response)
     }))
     .await;
@@ -129,6 +147,8 @@ async fn list_environments(state: AppState) -> Result<impl Reply, Infallible> {
     for (host, response) in responses {
         match response {
             Ok(AgentResponse::Environments { environments: envs }) => {
+                state.clear_host_list_backoff(&host).await;
+                state.cache_environments_for_host(&host, &envs).await;
                 for env in envs {
                     environments.push(EnvironmentResponse {
                         host: host.clone(),
@@ -137,8 +157,23 @@ async fn list_environments(state: AppState) -> Result<impl Reply, Infallible> {
                     });
                 }
             }
-            Ok(_) => tracing::warn!("Unexpected response for list environments from {}", host),
-            Err(e) => tracing::warn!("Failed to list environments from host '{}': {}", host, e),
+            Ok(_) => {
+                tracing::warn!("Unexpected response for list environments from {}", host);
+                append_cached_environments(&state, &host, &mut environments).await;
+            }
+            Err(e) => {
+                tracing::warn!("Failed to list environments from host '{}': {}", host, e);
+                if should_backoff_host_after_list_error(&e) {
+                    state
+                        .note_host_list_timeout(
+                            &host,
+                            Instant::now(),
+                            Duration::from_secs(LIST_HOST_BACKOFF_SECS),
+                        )
+                        .await;
+                }
+                append_cached_environments(&state, &host, &mut environments).await;
+            }
         }
     }
 
@@ -393,10 +428,21 @@ impl TaskResponse {
 async fn list_tasks(state: AppState) -> Result<impl Reply, Infallible> {
     let agents = state.list_agents().await;
     let mut tasks = Vec::new();
+    let mut active_agents = Vec::new();
+    let now = Instant::now();
 
-    let responses = join_all(agents.into_iter().map(|agent| async move {
+    for agent in agents {
+        if state.should_skip_host_list_poll(&agent.host, now).await {
+            append_cached_tasks(&state, &agent.host, &mut tasks).await;
+            continue;
+        }
+        active_agents.push(agent);
+    }
+
+    let responses = join_all(active_agents.into_iter().map(|agent| async move {
         let host = agent.host.clone();
-        let response = request_with_timeout(&agent, AgentRequest::ListTasks, 10).await;
+        let response =
+            request_with_timeout(&agent, AgentRequest::ListTasks, LIST_REQUEST_TIMEOUT_SECS).await;
         (host, response)
     }))
     .await;
@@ -404,15 +450,32 @@ async fn list_tasks(state: AppState) -> Result<impl Reply, Infallible> {
     for (host, response) in responses {
         match response {
             Ok(AgentResponse::Tasks { tasks: host_tasks }) => {
+                state.clear_host_list_backoff(&host).await;
                 state.record_tasks_for_host(&host, &host_tasks).await;
+                state.cache_tasks_for_host(&host, &host_tasks).await;
                 tasks.extend(
                     host_tasks
                         .iter()
                         .map(|task| TaskResponse::from_task(&host, task)),
                 );
             }
-            Ok(_) => tracing::warn!("Unexpected list_tasks response from {}", host),
-            Err(e) => tracing::warn!("Failed to list tasks from '{}': {}", host, e),
+            Ok(_) => {
+                tracing::warn!("Unexpected list_tasks response from {}", host);
+                append_cached_tasks(&state, &host, &mut tasks).await;
+            }
+            Err(e) => {
+                tracing::warn!("Failed to list tasks from '{}': {}", host, e);
+                if should_backoff_host_after_list_error(&e) {
+                    state
+                        .note_host_list_timeout(
+                            &host,
+                            Instant::now(),
+                            Duration::from_secs(LIST_HOST_BACKOFF_SECS),
+                        )
+                        .await;
+                }
+                append_cached_tasks(&state, &host, &mut tasks).await;
+            }
         }
     }
 
@@ -1274,9 +1337,40 @@ async fn request_with_timeout(
     request: AgentRequest,
     timeout_seconds: u64,
 ) -> Result<AgentResponse, StateError> {
-    match timeout(Duration::from_secs(timeout_seconds), agent.request(request)).await {
-        Ok(result) => result,
-        Err(_) => Err(StateError::AgentTimeout),
+    agent
+        .request_with_timeout(request, Duration::from_secs(timeout_seconds))
+        .await
+}
+
+fn should_backoff_host_after_list_error(err: &StateError) -> bool {
+    matches!(
+        err,
+        StateError::AgentDisconnected | StateError::AgentTimeout
+    )
+}
+
+async fn append_cached_environments(
+    state: &AppState,
+    host: &str,
+    environments: &mut Vec<EnvironmentResponse>,
+) {
+    let cached = state.get_cached_environments_for_host(host).await;
+    for env in cached {
+        environments.push(EnvironmentResponse {
+            host: host.to_string(),
+            name: env.name,
+            directory: env.directory.to_string_lossy().to_string(),
+        });
+    }
+}
+
+async fn append_cached_tasks(state: &AppState, host: &str, tasks: &mut Vec<TaskResponse>) {
+    let cached = state.get_cached_tasks_for_host(host).await;
+    if !cached.is_empty() {
+        state.record_tasks_for_host(host, &cached).await;
+    }
+    for task in &cached {
+        tasks.push(TaskResponse::from_task(host, task));
     }
 }
 
