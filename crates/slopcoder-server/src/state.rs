@@ -63,6 +63,12 @@ pub enum TerminalEvent {
     Error(String),
 }
 
+#[derive(Debug, Clone)]
+struct TaskTerminalBinding {
+    terminal_id: Uuid,
+    host: String,
+}
+
 impl ConnectedAgent {
     pub async fn request(&self, request: AgentRequest) -> Result<AgentResponse, StateError> {
         self.request_with_timeout(request, Duration::from_secs(120))
@@ -147,6 +153,8 @@ struct AppStateInner {
     agents_by_id: HashMap<Uuid, ConnectedAgent>,
     host_to_id: HashMap<String, Uuid>,
     task_hosts: HashMap<TaskId, String>,
+    task_terminals: HashMap<TaskId, TaskTerminalBinding>,
+    terminal_tasks: HashMap<Uuid, TaskId>,
     list_backoff_until: HashMap<String, Instant>,
     event_channels: HashMap<TaskId, broadcast::Sender<AgentEvent>>,
     terminal_channels: HashMap<Uuid, broadcast::Sender<TerminalEvent>>,
@@ -161,6 +169,8 @@ impl AppState {
                 agents_by_id: HashMap::new(),
                 host_to_id: HashMap::new(),
                 task_hosts: HashMap::new(),
+                task_terminals: HashMap::new(),
+                terminal_tasks: HashMap::new(),
                 list_backoff_until: HashMap::new(),
                 event_channels: HashMap::new(),
                 terminal_channels: HashMap::new(),
@@ -208,6 +218,7 @@ impl AppState {
     }
 
     pub async fn unregister_agent(&self, agent_id: Uuid) {
+        let mut channels_to_close = Vec::new();
         let mut inner = self.inner.write().await;
         let Some(agent) = inner.agents_by_id.remove(&agent_id) else {
             return;
@@ -215,8 +226,32 @@ impl AppState {
 
         inner.host_to_id.remove(&agent.host);
         inner.task_hosts.retain(|_, host| host != &agent.host);
+        let terminal_tasks: Vec<TaskId> = inner
+            .task_terminals
+            .iter()
+            .filter_map(|(task_id, binding)| {
+                if binding.host == agent.host {
+                    Some(*task_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for task_id in terminal_tasks {
+            if let Some(binding) = inner.task_terminals.remove(&task_id) {
+                inner.terminal_tasks.remove(&binding.terminal_id);
+                if let Some(tx) = inner.terminal_channels.remove(&binding.terminal_id) {
+                    channels_to_close.push(tx);
+                }
+            }
+        }
         inner.list_backoff_until.remove(&agent.host);
         tracing::info!("Agent '{}' disconnected", agent.host);
+        drop(inner);
+
+        for tx in channels_to_close {
+            let _ = tx.send(TerminalEvent::Closed);
+        }
     }
 
     pub async fn list_hosts(&self) -> Vec<HostInfo> {
@@ -267,7 +302,12 @@ impl AppState {
     }
 
     pub async fn clear_task_host(&self, task_id: TaskId) {
-        self.inner.write().await.task_hosts.remove(&task_id);
+        let mut inner = self.inner.write().await;
+        inner.task_hosts.remove(&task_id);
+        if let Some(binding) = inner.task_terminals.remove(&task_id) {
+            inner.terminal_tasks.remove(&binding.terminal_id);
+            inner.terminal_channels.remove(&binding.terminal_id);
+        }
     }
 
     pub async fn record_tasks_for_host(&self, host: &str, tasks: &[Task]) {
@@ -301,6 +341,48 @@ impl AppState {
     pub async fn resolve_agent_for_task(&self, task_id: TaskId) -> Option<ConnectedAgent> {
         let host = self.get_host_for_task(task_id).await?;
         self.get_agent_for_host(&host).await
+    }
+
+    pub async fn ensure_task_terminal(&self, task_id: TaskId, host: &str) -> (Uuid, bool) {
+        let mut inner = self.inner.write().await;
+        if let Some(binding) = inner.task_terminals.get(&task_id).cloned() {
+            if binding.host == host {
+                return (binding.terminal_id, false);
+            }
+        }
+
+        if let Some(binding) = inner.task_terminals.remove(&task_id) {
+            inner.terminal_tasks.remove(&binding.terminal_id);
+            inner.terminal_channels.remove(&binding.terminal_id);
+        }
+
+        let terminal_id = Uuid::new_v4();
+        inner.task_terminals.insert(
+            task_id,
+            TaskTerminalBinding {
+                terminal_id,
+                host: host.to_string(),
+            },
+        );
+        inner.terminal_tasks.insert(terminal_id, task_id);
+        (terminal_id, true)
+    }
+
+    pub async fn get_task_terminal(&self, task_id: TaskId) -> Option<(Uuid, String)> {
+        self.inner
+            .read()
+            .await
+            .task_terminals
+            .get(&task_id)
+            .map(|binding| (binding.terminal_id, binding.host.clone()))
+    }
+
+    pub async fn take_task_terminal(&self, task_id: TaskId) -> Option<(Uuid, String)> {
+        let mut inner = self.inner.write().await;
+        let binding = inner.task_terminals.remove(&task_id)?;
+        inner.terminal_tasks.remove(&binding.terminal_id);
+        inner.terminal_channels.remove(&binding.terminal_id);
+        Some((binding.terminal_id, binding.host))
     }
 
     pub async fn subscribe_to_task(&self, id: TaskId) -> broadcast::Receiver<AgentEvent> {
@@ -358,6 +440,9 @@ impl AppState {
         let _ = tx.send(event.clone());
         if matches!(event, TerminalEvent::Closed | TerminalEvent::Error(_)) {
             inner.terminal_channels.remove(&terminal_id);
+            if let Some(task_id) = inner.terminal_tasks.remove(&terminal_id) {
+                inner.task_terminals.remove(&task_id);
+            }
         }
     }
 }
@@ -377,7 +462,8 @@ fn unique_host_label(base: &str, existing: &HashMap<String, Uuid>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppState, PendingResponse};
+    use super::{AppState, PendingResponse, TerminalEvent};
+    use slopcoder_core::task::TaskId;
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -422,5 +508,66 @@ mod tests {
         assert!(state.list_hosts().await.is_empty());
         state.clear_host_list_backoff(&agent.host).await;
         assert_eq!(state.list_hosts().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn terminals_are_reused_for_task_and_host() {
+        let state = AppState::new(None, "test-password".to_string());
+        let task_id = TaskId::new();
+
+        let (first_id, first_created) = state.ensure_task_terminal(task_id, "boa").await;
+        assert!(first_created);
+        let (second_id, second_created) = state.ensure_task_terminal(task_id, "boa").await;
+        assert!(!second_created);
+        assert_eq!(first_id, second_id);
+    }
+
+    #[tokio::test]
+    async fn terminal_binding_is_cleared_when_terminal_closes() {
+        let state = AppState::new(None, "test-password".to_string());
+        let task_id = TaskId::new();
+
+        let (terminal_id, created) = state.ensure_task_terminal(task_id, "boa").await;
+        assert!(created);
+        assert_eq!(
+            state.get_task_terminal(task_id).await,
+            Some((terminal_id, "boa".to_string()))
+        );
+
+        state
+            .broadcast_terminal_event(terminal_id, TerminalEvent::Closed)
+            .await;
+
+        assert!(state.get_task_terminal(task_id).await.is_none());
+        let (next_id, next_created) = state.ensure_task_terminal(task_id, "boa").await;
+        assert!(next_created);
+        assert_ne!(terminal_id, next_id);
+    }
+
+    #[tokio::test]
+    async fn unregister_agent_closes_bound_terminal_sessions() {
+        let state = AppState::new(None, "test-password".to_string());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let pending: Arc<Mutex<HashMap<String, oneshot::Sender<PendingResponse>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let agent = state
+            .register_agent("boa-host".to_string(), Some("boa".to_string()), tx, pending)
+            .await;
+
+        let task_id = TaskId::new();
+        state.set_task_host(task_id, agent.host.clone()).await;
+        let (terminal_id, created) = state.ensure_task_terminal(task_id, &agent.host).await;
+        assert!(created);
+        let mut terminal_events = state.subscribe_to_terminal(terminal_id).await;
+
+        state.unregister_agent(agent.id).await;
+
+        let received = tokio::time::timeout(Duration::from_secs(1), terminal_events.recv())
+            .await
+            .expect("terminal close event timeout")
+            .expect("terminal close event missing");
+        assert!(matches!(received, TerminalEvent::Closed));
+        assert!(state.get_host_for_task(task_id).await.is_none());
+        assert!(state.get_task_terminal(task_id).await.is_none());
     }
 }

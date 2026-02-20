@@ -195,6 +195,8 @@ Behavior:
 - Task detail tabs now include `Terminal` beside `Conversation` and `Diff` on desktop.
 - Terminal uses `xterm` over a coordinator websocket that proxies I/O to the owning `slopagent` host.
 - Terminal starts in the selected task workspace directory on that remote host (`worktree_path` for isolated tasks, environment directory for in-place tasks).
+- Terminal sessions are now task-scoped and persistent: reconnecting the websocket for the same task reattaches to the same remote PTY instead of spawning a fresh shell.
+- Terminal sessions are torn down only when the task is archived/deleted (or when the owning agent disconnects), not when a browser tab closes or the user switches task tabs.
 - Terminal websocket supports dynamic PTY resize so the shell tracks pane/window dimensions.
 
 ## 9. Testing

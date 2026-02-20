@@ -167,6 +167,7 @@ impl TerminalManager {
             .insert(terminal_id, pty_command_tx.clone());
 
         let out_tx_for_reader = self.out_tx.clone();
+        let sessions_for_reader = self.sessions.clone();
         std::thread::spawn(move || {
             let mut buffer = [0_u8; 8192];
             loop {
@@ -187,9 +188,11 @@ impl TerminalManager {
                     Err(_) => break,
                 }
             }
+            sessions_for_reader.blocking_lock().remove(&terminal_id);
             let _ = out_tx_for_reader.send(AgentEnvelope::TerminalClosed { terminal_id });
         });
 
+        let sessions_for_writer = self.sessions.clone();
         std::thread::spawn(move || {
             for cmd in pty_command_rx {
                 match cmd {
@@ -212,6 +215,7 @@ impl TerminalManager {
                     PtyCommand::Shutdown => break,
                 }
             }
+            sessions_for_writer.blocking_lock().remove(&terminal_id);
             let _ = child.kill();
             let _ = child.wait();
         });

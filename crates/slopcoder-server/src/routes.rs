@@ -736,10 +736,14 @@ async fn archive_task(id: String, state: AppState) -> Result<impl Reply, Infalli
     };
 
     match agent.request(AgentRequest::ArchiveTask { task_id }).await {
-        Ok(AgentResponse::ArchiveResult { status, message }) => Ok(warp::reply::with_status(
-            warp::reply::json(&serde_json::json!({ "status": status, "message": message })),
-            StatusCode::OK,
-        )),
+        Ok(AgentResponse::ArchiveResult { status, message }) => {
+            close_task_terminal_session(&state, &agent, task_id).await;
+            state.clear_task_host(task_id).await;
+            Ok(warp::reply::with_status(
+                warp::reply::json(&serde_json::json!({ "status": status, "message": message })),
+                StatusCode::OK,
+            ))
+        }
         Ok(_) => Ok(error_reply(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Unexpected response from agent",
@@ -776,10 +780,14 @@ async fn delete_task(
         })
         .await
     {
-        Ok(AgentResponse::DeleteResult { status, message }) => Ok(warp::reply::with_status(
-            warp::reply::json(&serde_json::json!({ "status": status, "message": message })),
-            StatusCode::OK,
-        )),
+        Ok(AgentResponse::DeleteResult { status, message }) => {
+            close_task_terminal_session(&state, &agent, task_id).await;
+            state.clear_task_host(task_id).await;
+            Ok(warp::reply::with_status(
+                warp::reply::json(&serde_json::json!({ "status": status, "message": message })),
+                StatusCode::OK,
+            ))
+        }
         Ok(_) => Ok(error_reply(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Unexpected response from agent",
@@ -1071,19 +1079,35 @@ async fn handle_terminal_websocket(ws: WebSocket, id: String, state: AppState) {
         },
     };
 
-    let terminal_id = Uuid::new_v4();
+    let previous_terminal = state.get_task_terminal(task_id).await;
+    let (terminal_id, needs_open) = state.ensure_task_terminal(task_id, &agent.host).await;
+    if needs_open {
+        if let Some((previous_terminal_id, previous_host)) = previous_terminal {
+            if previous_host != agent.host {
+                if let Some(previous_agent) = state.get_agent_for_host(&previous_host).await {
+                    let _ = previous_agent.send_envelope(AgentEnvelope::TerminalClose {
+                        terminal_id: previous_terminal_id,
+                    });
+                }
+            }
+        }
+    }
+
     let mut terminal_events = state.subscribe_to_terminal(terminal_id).await;
-    if let Err(e) = agent.send_envelope(AgentEnvelope::TerminalOpen {
-        terminal_id,
-        task_id,
-    }) {
-        tracing::warn!(
-            "Failed to send terminal open to host '{}' for task {}: {}",
-            agent.host,
+    if needs_open {
+        if let Err(e) = agent.send_envelope(AgentEnvelope::TerminalOpen {
+            terminal_id,
             task_id,
-            e
-        );
-        return;
+        }) {
+            tracing::warn!(
+                "Failed to send terminal open to host '{}' for task {}: {}",
+                agent.host,
+                task_id,
+                e
+            );
+            let _ = state.take_task_terminal(task_id).await;
+            return;
+        }
     }
 
     let (mut ws_tx, mut ws_rx) = ws.split();
@@ -1150,7 +1174,36 @@ async fn handle_terminal_websocket(ws: WebSocket, id: String, state: AppState) {
             to_ws.abort();
         }
     }
-    let _ = agent.send_envelope(AgentEnvelope::TerminalClose { terminal_id });
+}
+
+async fn close_task_terminal_session(state: &AppState, agent: &ConnectedAgent, task_id: TaskId) {
+    let Some((terminal_id, terminal_host)) = state.take_task_terminal(task_id).await else {
+        return;
+    };
+
+    let close_agent = if terminal_host == agent.host {
+        Some(agent.clone())
+    } else {
+        state.get_agent_for_host(&terminal_host).await
+    };
+    if let Some(close_agent) = close_agent {
+        if let Err(e) = close_agent.send_envelope(AgentEnvelope::TerminalClose { terminal_id }) {
+            tracing::warn!(
+                "Failed to close terminal {} for task {} on host '{}': {}",
+                terminal_id,
+                task_id,
+                close_agent.host,
+                e
+            );
+        }
+    } else {
+        tracing::warn!(
+            "Terminal host '{}' disconnected before closing terminal {} for task {}",
+            terminal_host,
+            terminal_id,
+            task_id
+        );
+    }
 }
 
 // ============================================================================
