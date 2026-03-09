@@ -340,6 +340,12 @@ fn sanitize_for_path(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn test_build_config() {
@@ -397,13 +403,19 @@ mod tests {
 
     #[test]
     fn test_default_environments_root() {
+        let _guard = env_lock().lock().unwrap();
         std::env::remove_var("XDG_DATA_HOME");
         let root = EnvironmentConfig::default_environments_root();
-        assert!(root.ends_with(".local/share/slopcoder/environments"));
+        let expected = std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(".local/share/slopcoder/environments");
+        assert_eq!(root, expected);
     }
 
     #[test]
     fn test_default_roots_respect_xdg_data_home() {
+        let _guard = env_lock().lock().unwrap();
         std::env::set_var("XDG_DATA_HOME", "/tmp/xdg-data");
         assert_eq!(
             EnvironmentConfig::default_worktrees_directory(),

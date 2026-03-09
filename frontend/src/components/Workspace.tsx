@@ -1189,7 +1189,7 @@ export default function Workspace() {
   );
 
   return (
-    <div class="h-screen h-dvh bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
+    <div class="h-screen h-dvh w-screen max-w-[100vw] overflow-hidden bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
       <div class="lg:hidden sticky top-0 z-30 flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-800 bg-white/95 dark:bg-gray-950/95 backdrop-blur supports-[backdrop-filter]:bg-white/80 supports-[backdrop-filter]:dark:bg-gray-950/80">
         <button
           onClick={() => setMobileMenuOpen(true)}
@@ -1202,7 +1202,7 @@ export default function Workspace() {
         <div class="w-7" />
       </div>
 
-      <div class="h-[calc(100vh-41px)] h-[calc(100dvh-41px)] lg:h-full lg:grid lg:grid-cols-[320px_1fr] lg:grid-rows-[minmax(0,1fr)]">
+      <div class="h-[calc(100vh-41px)] h-[calc(100dvh-41px)] overflow-hidden lg:h-full lg:grid lg:grid-cols-[320px_1fr] lg:grid-rows-[minmax(0,1fr)]">
         <aside class="hidden lg:block border-r border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 p-3 overflow-y-auto">
           {sidebarContent()}
         </aside>
@@ -1229,7 +1229,7 @@ export default function Workspace() {
           </div>
         </Show>
 
-        <main class="h-full p-3 lg:p-5 min-w-0 min-h-0 flex flex-col">
+        <main class="h-full p-3 lg:p-5 min-w-0 min-h-0 flex flex-col overflow-hidden">
           <Show when={mode().kind === "task"}>
             <div class="mb-4 hidden lg:flex gap-2 border-b border-gray-200 dark:border-gray-800">
               <button

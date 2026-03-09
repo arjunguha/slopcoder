@@ -190,6 +190,7 @@ Behavior:
 - Conversation pane constrains message width (`min-w-0`) and enables horizontal scrolling so long unbroken lines (for example, markdown code-fence lines) do not widen the whole page.
 - Task conversation view keeps the task header pinned at the top and the follow-up composer pinned at the bottom (mobile and desktop), with the transcript as the primary scrollable region.
 - Follow-up prompt form keeps the send button on-screen by allowing the textarea to shrink and forcing the button to remain non-shrinking.
+- On mobile, the app shell is clamped to the visual viewport (`100dvh` / `100vw`) with page-level overflow hidden, so the browser window does not scroll and the conversation transcript remains the primary vertical scroller.
 - Live conversation streaming avoids subscription churn during task polling to reduce update flicker.
 - `command_execution` transcript items now render as command cards showing the command text and output preview truncated to 5 lines and 1000 characters (with a generic truncation indicator).
 - Task detail tabs now include `Terminal` beside `Conversation` and `Diff` on desktop.
