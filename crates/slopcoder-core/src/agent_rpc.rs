@@ -67,6 +67,7 @@ pub enum AgentRequest {
     ListTasks,
     GetTask { task_id: TaskId },
     CreateTask { request: AgentCreateTaskRequest },
+    RenameTask { task_id: TaskId, name: String },
     SendPrompt { task_id: TaskId, prompt: String },
     GetTaskOutput { task_id: TaskId },
     GetTaskDiff { task_id: TaskId },
@@ -99,6 +100,9 @@ pub enum AgentResponse {
     CreatedTask {
         id: TaskId,
         worktree_path: String,
+    },
+    RenamedTask {
+        task: Task,
     },
     TaskOutput {
         events: Vec<AgentEvent>,

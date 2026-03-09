@@ -418,6 +418,29 @@ mod tests {
         assert!(new_store.get(task_id).is_some());
     }
 
+    #[tokio::test]
+    async fn test_save_task_persists_renamed_task_name() {
+        let temp_dir = TempDir::new().unwrap();
+        let worktree = temp_dir.path().join("main");
+        tokio::fs::create_dir(&worktree).await.unwrap();
+
+        let mut store = PersistentTaskStore::new();
+        store.register_environment("test-env".to_string(), temp_dir.path().to_path_buf());
+
+        let task = create_test_task("test-env", Some("main"), "feature/test", worktree);
+        let task_id = task.id;
+        store.insert(task).await.unwrap();
+
+        let renamed = "renamed task".to_string();
+        store.get_mut(task_id).unwrap().rename(renamed.clone());
+        store.save_task(task_id).await.unwrap();
+
+        let path = TasksFile::path_for_env(temp_dir.path());
+        let loaded = TasksFile::load(&path).await.unwrap();
+        assert_eq!(loaded.tasks.len(), 1);
+        assert_eq!(loaded.tasks[0].name, renamed);
+    }
+
     /// Test scenario: worktree is deleted between task runs (simulating CLI removal)
     #[tokio::test]
     async fn test_worktree_deleted_between_runs() {

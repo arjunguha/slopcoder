@@ -59,6 +59,10 @@ export interface CreateTaskResponse {
   worktree_path: string;
 }
 
+export interface RenameTaskRequest {
+  name: string;
+}
+
 export interface SendPromptRequest {
   prompt: string;
 }

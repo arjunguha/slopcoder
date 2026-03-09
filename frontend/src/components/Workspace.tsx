@@ -19,6 +19,7 @@ import {
   sendPrompt,
   subscribeToTask,
   getTaskDiff,
+  renameTask,
   mergeTask,
   getMergeStatus,
   archiveTask,
@@ -69,6 +70,130 @@ function StatusBadge(props: { status: Task["status"] }) {
     >
       {props.status}
     </span>
+  );
+}
+
+function EditableTaskName(props: {
+  taskId: string;
+  name: string;
+  class: string;
+  inputClass?: string;
+  disabled?: boolean;
+  onRenamed?: (name: string) => void | Promise<void>;
+}) {
+  const [editing, setEditing] = createSignal(false);
+  const [saving, setSaving] = createSignal(false);
+  const [draft, setDraft] = createSignal(props.name);
+  const [displayName, setDisplayName] = createSignal(props.name);
+  const [error, setError] = createSignal("");
+  let inputRef: HTMLInputElement | undefined;
+
+  createEffect(() => {
+    setDisplayName(props.name);
+  });
+
+  const focusEditor = () => {
+    requestAnimationFrame(() => {
+      inputRef?.focus();
+      inputRef?.select();
+    });
+  };
+
+  const startEditing = (event: MouseEvent) => {
+    if (props.disabled || saving()) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setDraft(displayName());
+    setError("");
+    setEditing(true);
+    focusEditor();
+  };
+
+  const cancelEditing = () => {
+    if (saving()) {
+      return;
+    }
+    setDraft(displayName());
+    setError("");
+    setEditing(false);
+  };
+
+  const submit = async () => {
+    if (saving()) {
+      return;
+    }
+
+    const nextName = draft().trim();
+    if (!nextName) {
+      setError("Task name is required.");
+      focusEditor();
+      return;
+    }
+
+    if (nextName === displayName()) {
+      setEditing(false);
+      setError("");
+      return;
+    }
+
+    setSaving(true);
+    setError("");
+    try {
+      setDisplayName(nextName);
+      setDraft(nextName);
+      await renameTask(props.taskId, { name: nextName });
+      setEditing(false);
+      await props.onRenamed?.(nextName);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Rename failed");
+      focusEditor();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div class="min-w-0">
+      <Show
+        when={editing()}
+        fallback={
+          <div
+            class={`${props.class} ${props.disabled ? "" : "cursor-text"}`}
+            onDblClick={startEditing}
+            title={props.disabled ? displayName() : "Double-click to rename"}
+          >
+            {displayName()}
+          </div>
+        }
+      >
+        <input
+          ref={inputRef}
+          type="text"
+          value={draft()}
+          onInput={(e) => setDraft(e.currentTarget.value)}
+          onClick={(e) => e.stopPropagation()}
+          onDblClick={(e) => e.stopPropagation()}
+          onBlur={() => void submit()}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void submit();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              cancelEditing();
+            }
+          }}
+          class={props.inputClass ?? props.class}
+          disabled={saving()}
+        />
+      </Show>
+      <Show when={error()}>
+        <div class="mt-1 text-xs text-red-600 dark:text-red-400">{error()}</div>
+      </Show>
+    </div>
   );
 }
 
@@ -197,6 +322,8 @@ function TaskPane(props: {
   taskId: string;
   activeTab: () => RightTab;
   hideDiff?: boolean;
+  nameOverride?: () => string | null;
+  onTaskRenamed?: (name: string) => void | Promise<void>;
   onTaskRemoved: () => void;
 }) {
   const [task, { refetch: refetchTask }] = createResource(() => props.taskId, getTask);
@@ -252,6 +379,7 @@ function TaskPane(props: {
   const [draftHydratedTaskId, setDraftHydratedTaskId] = createSignal<string | null>(null);
   const taskStatus = createMemo(() => taskData()?.status ?? "pending");
   const mergeReady = createMemo(() => mergeStatus.latest ?? mergeStatus());
+  const displayTaskName = createMemo(() => props.nameOverride?.() ?? taskData()?.name ?? "");
 
   let outputRef: HTMLDivElement | undefined;
   let promptRef: HTMLTextAreaElement | undefined;
@@ -470,7 +598,17 @@ function TaskPane(props: {
           <div class="flex items-center justify-between gap-3">
             <div>
               <div class="flex items-center gap-2">
-                <div class="text-xl font-bold text-gray-900 dark:text-gray-100">{taskData()!.name}</div>
+                <EditableTaskName
+                  taskId={taskData()!.id}
+                  name={displayTaskName()}
+                  class="text-xl font-bold text-gray-900 dark:text-gray-100"
+                  inputClass="w-full rounded-md border border-blue-400 bg-white px-2 py-1 text-xl font-bold text-gray-900 outline-none dark:border-blue-500 dark:bg-gray-900 dark:text-gray-100"
+                  disabled={archiving() || deleting()}
+                  onRenamed={async (name) => {
+                    await refetchTask();
+                    await props.onTaskRenamed?.(name);
+                  }}
+                />
                 <Show when={taskData()!.workspace_kind === "environment"}>
                   <button
                     type="button"
@@ -527,7 +665,7 @@ function TaskPane(props: {
         <Show when={actionDialog() === "merge"}>
           <div class="mb-3 rounded-lg border border-purple-300 dark:border-purple-700 bg-purple-50 dark:bg-purple-950/30 p-3">
             <div class="text-sm font-medium text-purple-800 dark:text-purple-200">
-              Merge <span class="font-mono">{taskData()!.merge_branch || taskData()!.name}</span> into{" "}
+              Merge <span class="font-mono">{taskData()!.merge_branch || displayTaskName()}</span> into{" "}
               <span class="font-mono">{taskData()!.base_branch || "current"}</span>?
             </div>
             <Show when={mergeReady()?.reason && !mergeReady()?.can_merge}>
@@ -966,6 +1104,7 @@ export default function Workspace() {
   const tasksById = createMemo(() => new Map(tasksData().map((task) => [task.id, task])));
   const [expanded, setExpanded] = createSignal<Record<string, boolean>>({});
   const [hasExpandedRunningTasks, setHasExpandedRunningTasks] = createSignal(false);
+  const [taskNameOverrides, setTaskNameOverrides] = createSignal<Record<string, string>>({});
   const [mode, setMode] = createSignal<RightMode>({ kind: "new-environment" });
   const [tab, setTab] = createSignal<RightTab>("conversation");
   const [mobileMenuOpen, setMobileMenuOpen] = createSignal(false);
@@ -1052,6 +1191,11 @@ export default function Workspace() {
     const currentMode = mode();
     return currentMode.kind === "task" ? currentMode.taskId : null;
   });
+
+  const rememberRenamedTask = async (taskId: string, name: string) => {
+    setTaskNameOverrides((prev) => ({ ...prev, [taskId]: name }));
+    await refetchTasks();
+  };
 
   const toggleEnvironment = (name: string) => {
     setExpanded((prev) => ({ ...prev, [name]: !prev[name] }));
@@ -1147,12 +1291,24 @@ export default function Workspace() {
                     {(taskId) => {
                       const task = createMemo(() => tasksById().get(taskId));
                       return (
-                        <button
+                        <div
+                          role="button"
+                          tabindex="0"
                           onClick={() => {
                             setMode({ kind: "task", taskId });
                             setTab("conversation");
                             if (isMobile()) {
                               setMobileMenuOpen(false);
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              setMode({ kind: "task", taskId });
+                              setTab("conversation");
+                              if (isMobile()) {
+                                setMobileMenuOpen(false);
+                              }
                             }
                           }}
                           class={`w-full rounded-md border px-2 py-2 text-left ${
@@ -1161,9 +1317,13 @@ export default function Workspace() {
                               : "border-transparent hover:border-gray-200 dark:hover:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
                           }`}
                         >
-                          <div class="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                            {task()?.name}
-                          </div>
+                          <EditableTaskName
+                            taskId={taskId}
+                            name={taskNameOverrides()[taskId] ?? task()?.name ?? ""}
+                            class="truncate text-sm font-medium text-gray-900 dark:text-gray-100"
+                            inputClass="w-full rounded border border-blue-400 bg-white px-1 py-0.5 text-sm font-medium text-gray-900 outline-none dark:border-blue-500 dark:bg-gray-900 dark:text-gray-100"
+                            onRenamed={(name) => rememberRenamedTask(taskId, name)}
+                          />
                           <div class="mt-1 flex items-center justify-between">
                             <span class="text-[11px] text-gray-500 dark:text-gray-400">
                               {new Date(task()?.created_at || "").toLocaleDateString()}
@@ -1172,7 +1332,7 @@ export default function Workspace() {
                               <StatusBadge status={task()!.status} />
                             </Show>
                           </div>
-                        </button>
+                        </div>
                       );
                     }}
                   </For>
@@ -1297,6 +1457,13 @@ export default function Workspace() {
                 taskId={(mode() as { kind: "task"; taskId: string }).taskId}
                 activeTab={tab}
                 hideDiff={isMobile()}
+                nameOverride={() => {
+                  const taskId = (mode() as { kind: "task"; taskId: string }).taskId;
+                  return taskNameOverrides()[taskId] ?? null;
+                }}
+                onTaskRenamed={(name) =>
+                  rememberRenamedTask((mode() as { kind: "task"; taskId: string }).taskId, name)
+                }
                 onTaskRemoved={() => {
                   refetchTasks();
                   const current = mode();

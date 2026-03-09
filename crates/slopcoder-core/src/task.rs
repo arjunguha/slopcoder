@@ -199,6 +199,11 @@ impl Task {
         self.status = TaskStatus::Interrupted;
     }
 
+    /// Rename the task to a new human-friendly topic.
+    pub fn rename(&mut self, name: String) {
+        self.name = name;
+    }
+
     /// Get the last prompt that was run.
     pub fn last_prompt(&self) -> Option<&str> {
         self.history.last().map(|r| r.prompt.as_str())
@@ -305,6 +310,24 @@ mod tests {
         assert!(!task.is_running());
         assert_eq!(task.status, TaskStatus::Completed);
         assert_eq!(task.history[0].success, Some(true));
+    }
+
+    #[test]
+    fn test_task_rename() {
+        let mut task = Task::new(
+            AgentKind::Codex,
+            "env".to_string(),
+            "old topic".to_string(),
+            TaskWorkspaceKind::Environment,
+            None,
+            None,
+            false,
+            PathBuf::from("/tmp"),
+        );
+
+        task.rename("new topic".to_string());
+
+        assert_eq!(task.name, "new topic");
     }
 
     #[test]

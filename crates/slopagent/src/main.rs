@@ -603,6 +603,7 @@ async fn handle_request(
             task: state.get_task(task_id).await,
         }),
         AgentRequest::CreateTask { request } => create_task(state, request, out_tx).await,
+        AgentRequest::RenameTask { task_id, name } => rename_task(state, task_id, &name).await,
         AgentRequest::SendPrompt { task_id, prompt } => {
             send_prompt(state, task_id, prompt, out_tx).await
         }
@@ -783,6 +784,25 @@ async fn send_prompt(
     });
 
     Ok(AgentResponse::Ack)
+}
+
+async fn rename_task(
+    state: AppState,
+    task_id: TaskId,
+    name: &str,
+) -> Result<AgentResponse, RpcError> {
+    let task = state
+        .rename_task(task_id, name)
+        .await
+        .map_err(|err| match err {
+            StateError::TaskNotFound(_) => RpcError::new(StatusCode::NOT_FOUND, "Task not found"),
+            StateError::InvalidTaskName => {
+                RpcError::new(StatusCode::BAD_REQUEST, "Task name is required")
+            }
+            other => RpcError::new(StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        })?;
+
+    Ok(AgentResponse::RenamedTask { task })
 }
 
 async fn interrupt_task(state: AppState, task_id: TaskId) -> Result<AgentResponse, RpcError> {
@@ -1508,6 +1528,9 @@ fn map_state_error(err: StateError) -> RpcError {
     match err {
         StateError::TaskNotFound(_) => RpcError::new(StatusCode::NOT_FOUND, "Task not found"),
         StateError::WorktreeMissing(_) => RpcError::new(StatusCode::GONE, "Task worktree missing"),
+        StateError::InvalidTaskName => {
+            RpcError::new(StatusCode::BAD_REQUEST, "Task name is required")
+        }
         StateError::TaskNotReady => RpcError::new(StatusCode::CONFLICT, "Task not ready"),
         StateError::PersistenceError(e) => {
             RpcError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())

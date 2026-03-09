@@ -292,6 +292,12 @@ fn tasks_routes(
         .and(with_state(state.clone()))
         .and_then(get_task);
 
+    let rename = warp::path!(String)
+        .and(warp::patch())
+        .and(warp::body::json())
+        .and(with_state(state.clone()))
+        .and_then(rename_task);
+
     let prompt = warp::path!(String / "prompt")
         .and(warp::post())
         .and(warp::body::json())
@@ -349,6 +355,7 @@ fn tasks_routes(
         .and_then(delete_task);
 
     list.or(create)
+        .or(rename)
         .or(get)
         .or(prompt)
         .or(output)
@@ -507,6 +514,11 @@ struct CreateTaskResponse {
     worktree_path: String,
 }
 
+#[derive(Deserialize)]
+struct RenameTaskRequest {
+    name: String,
+}
+
 async fn create_task(req: CreateTaskRequest, state: AppState) -> Result<impl Reply, Infallible> {
     let host = req.host.trim();
     if host.is_empty() {
@@ -537,6 +549,40 @@ async fn create_task(req: CreateTaskRequest, state: AppState) -> Result<impl Rep
                 StatusCode::CREATED,
             ))
         }
+        Ok(_) => Ok(error_reply(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unexpected response from agent",
+        )),
+        Err(e) => Ok(error_reply(state_error_status(&e), e.to_string())),
+    }
+}
+
+async fn rename_task(
+    id: String,
+    req: RenameTaskRequest,
+    state: AppState,
+) -> Result<impl Reply, Infallible> {
+    let task_id = match parse_task_id(&id) {
+        Ok(id) => id,
+        Err(reply) => return Ok(reply),
+    };
+
+    let agent = match resolve_agent_for_task(&state, task_id).await {
+        Ok(agent) => agent,
+        Err(e) => return Ok(error_reply(state_error_status(&e), e.to_string())),
+    };
+
+    match agent
+        .request(AgentRequest::RenameTask {
+            task_id,
+            name: req.name,
+        })
+        .await
+    {
+        Ok(AgentResponse::RenamedTask { task }) => Ok(warp::reply::with_status(
+            warp::reply::json(&TaskResponse::from_task(&agent.host, &task)),
+            StatusCode::OK,
+        )),
         Ok(_) => Ok(error_reply(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Unexpected response from agent",

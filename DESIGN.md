@@ -147,6 +147,7 @@ Task response payload now includes:
 - `merge_branch` (optional)
 
 Task action endpoints:
+- `PATCH /api/tasks/:id` (rename task; returns updated task)
 - `POST /api/tasks/:id/merge`
 - `GET /api/tasks/:id/merge-status` (returns `can_merge` + reason)
 - `POST /api/tasks/:id/archive`
@@ -177,6 +178,7 @@ Behavior:
 - Prompt textareas in task-creation panes support `Ctrl+Enter` (and `Cmd+Enter`) to submit without clicking.
 - Task conversation follow-up drafts are cached locally per task ID in browser `localStorage`; drafts are not persisted on the server.
 - Task list and task header display task `name` (topic).
+- Double-clicking a task title in the sidebar or task header switches it into an inline rename input; save occurs on `Enter` or blur, and `Escape` cancels.
 - `environment` tasks show an archive button beside the task title.
 - `worktree` tasks show merge/delete actions (no archive button).
 - Merge action uses server-side merge readiness and is disabled when merge cannot currently succeed.

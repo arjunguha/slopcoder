@@ -5,6 +5,7 @@ import type {
   Task,
   CreateTaskRequest,
   CreateTaskResponse,
+  RenameTaskRequest,
   CreateEnvironmentRequest,
   SendPromptRequest,
   AgentEvent,
@@ -111,6 +112,13 @@ export async function getTask(id: string): Promise<Task> {
 export async function createTask(req: CreateTaskRequest): Promise<CreateTaskResponse> {
   return fetchJson("/api/tasks", {
     method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+export async function renameTask(taskId: string, req: RenameTaskRequest): Promise<Task> {
+  return fetchJson(`/api/tasks/${taskId}`, {
+    method: "PATCH",
     body: JSON.stringify(req),
   });
 }

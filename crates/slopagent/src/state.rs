@@ -25,6 +25,9 @@ pub enum StateError {
     #[error("Task cannot accept prompts in current state")]
     TaskNotReady,
 
+    #[error("Task name is required")]
+    InvalidTaskName,
+
     #[error("Persistence error: {0}")]
     PersistenceError(#[from] PersistenceError),
 }
@@ -366,6 +369,23 @@ impl AppState {
         }
     }
 
+    pub async fn rename_task(&self, id: TaskId, raw_name: &str) -> Result<Task, StateError> {
+        let name = raw_name.trim();
+        if name.is_empty() {
+            return Err(StateError::InvalidTaskName);
+        }
+
+        let mut inner = self.inner.write().await;
+        if let Some(task) = inner.tasks.get_mut(id) {
+            task.rename(name.to_string());
+            let updated = task.clone();
+            inner.tasks.save_task(id).await?;
+            Ok(updated)
+        } else {
+            Err(StateError::TaskNotFound(id))
+        }
+    }
+
     pub async fn start_task_run(&self, id: TaskId, prompt: String) -> Result<(), StateError> {
         let mut inner = self.inner.write().await;
 
@@ -685,5 +705,40 @@ mod tests {
             vec!["a".to_string(), "m".to_string(), "z".to_string()]
         );
         assert_eq!(merged[0].directory, PathBuf::from("/discovered/a"));
+    }
+
+    #[tokio::test]
+    async fn test_rename_task_rejects_blank_names() {
+        let temp = TempDir::new().unwrap();
+        let env_dir = temp.path().join("env");
+        init_repo(&env_dir).await;
+
+        let config = EnvironmentConfig {
+            environments_root: temp.path().join("environments"),
+            worktrees_directory: temp.path().join("worktrees"),
+            environments: vec![Environment {
+                name: "env".to_string(),
+                directory: env_dir.clone(),
+            }],
+        };
+
+        let state = AppState::new(config, None, 10, 100, "model".to_string())
+            .await
+            .unwrap();
+        let task = Task::new(
+            slopcoder_core::anyagent::AgentKind::Codex,
+            "env".to_string(),
+            "original".to_string(),
+            slopcoder_core::task::TaskWorkspaceKind::Environment,
+            None,
+            None,
+            false,
+            env_dir,
+        );
+        let task_id = task.id;
+        state.insert_task(task).await.unwrap();
+
+        let err = state.rename_task(task_id, "   ").await.unwrap_err();
+        assert!(matches!(err, StateError::InvalidTaskName));
     }
 }
