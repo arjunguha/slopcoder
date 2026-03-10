@@ -179,6 +179,9 @@ Behavior:
 - Task conversation follow-up drafts are cached locally per task ID in browser `localStorage`; drafts are not persisted on the server.
 - Task list and task header display task `name` (topic).
 - Double-clicking a task title in the sidebar or task header switches it into an inline rename input; save occurs on `Enter` or blur, and `Escape` cancels.
+- The workspace keeps the last known hosts, environments, and tasks in client memory so a transient host disconnect does not remove that host's task list from the sidebar before it reconnects.
+- Disconnected hosts remain visible but dimmed; their environments/tasks are also dimmed and labeled disconnected rather than disappearing.
+- When a host is disconnected, the UI disables task creation for that host and disables the conversation `Send` composer for its existing tasks while leaving the transcript visible.
 - `environment` tasks show an archive button beside the task title.
 - `worktree` tasks show merge/delete actions (no archive button).
 - Merge action uses server-side merge readiness and is disabled when merge cannot currently succeed.

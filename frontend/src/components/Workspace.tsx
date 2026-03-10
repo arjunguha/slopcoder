@@ -30,6 +30,8 @@ import {
   type AgentEvent,
   type AgentKind,
   type CompletedItem,
+  type Environment,
+  type Host,
   type Task,
 } from "../types";
 import { DiffViewer } from "./DiffViewer";
@@ -317,6 +319,7 @@ function CompletedItemRow(props: { item: CompletedItem }) {
 function TaskPane(props: {
   taskId: string;
   activeTab: () => RightTab;
+  hostConnected: () => boolean;
   hideDiff?: boolean;
   nameOverride?: () => string | null;
   onTaskRenamed?: (name: string) => void | Promise<void>;
@@ -371,6 +374,7 @@ function TaskPane(props: {
   const [showForcePrune, setShowForcePrune] = createSignal(false);
   const [draftHydratedTaskId, setDraftHydratedTaskId] = createSignal<string | null>(null);
   const taskStatus = createMemo(() => taskData()?.status ?? "pending");
+  const hostConnected = createMemo(() => props.hostConnected());
   const mergeReady = createMemo(() => mergeStatus.latest ?? mergeStatus());
   const displayTaskName = createMemo(() => props.nameOverride?.() ?? taskData()?.name ?? "");
 
@@ -507,7 +511,7 @@ function TaskPane(props: {
 
   const sendFollowup = async (e: Event) => {
     e.preventDefault();
-    if (!prompt().trim() || sending()) return;
+    if (!prompt().trim() || sending() || !hostConnected()) return;
     const value = prompt();
     setSending(true);
     setError("");
@@ -667,6 +671,12 @@ function TaskPane(props: {
           </div>
         </Show>
 
+        <Show when={!hostConnected()}>
+          <div class="mb-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-gray-100 dark:bg-gray-900/60 p-3 text-sm text-gray-700 dark:text-gray-300">
+            Host disconnected. Conversation history remains available, but sending prompts is disabled until this host reconnects.
+          </div>
+        </Show>
+
         <Show when={actionDialog() === "merge"}>
           <div class="mb-3 rounded-lg border border-purple-300 dark:border-purple-700 bg-purple-50 dark:bg-purple-950/30 p-3">
             <div class="text-sm font-medium text-purple-800 dark:text-purple-200">
@@ -784,12 +794,17 @@ function TaskPane(props: {
                     rows={3}
                     value={prompt()}
                     onInput={(e) => setPrompt(e.currentTarget.value)}
-                    placeholder="Continue the conversation..."
+                    placeholder={
+                      hostConnected()
+                        ? "Continue the conversation..."
+                        : "Host disconnected. Reconnect to continue the conversation..."
+                    }
                     class="min-w-0 flex-1 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+                    disabled={!hostConnected()}
                   />
                   <button
                     type="submit"
-                    disabled={!prompt().trim() || sending()}
+                    disabled={!hostConnected() || !prompt().trim() || sending()}
                     class="shrink-0 rounded-lg bg-blue-600 px-5 py-2 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {sending() ? "Sending..." : "Send"}
@@ -830,6 +845,7 @@ function TaskPane(props: {
 function NewTaskPane(props: {
   host: string;
   environment: string;
+  hostConnected: boolean;
   onCreated: (taskId: string) => void;
 }) {
   const [taskName, setTaskName] = createSignal("");
@@ -848,7 +864,7 @@ function NewTaskPane(props: {
 
   const submit = async (e: Event) => {
     e.preventDefault();
-    if (!prompt().trim()) return;
+    if (!props.hostConnected || !prompt().trim()) return;
     setLoading(true);
     setError("");
     try {
@@ -931,18 +947,28 @@ function NewTaskPane(props: {
           onKeyDown={(e) => {
             if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
               e.preventDefault();
-              if (!loading() && prompt().trim()) {
+              if (props.hostConnected && !loading() && prompt().trim()) {
                 void submit(new Event("submit"));
               }
             }
           }}
-          placeholder="Describe what you want built..."
+          placeholder={
+            props.hostConnected
+              ? "Describe what you want built..."
+              : "Host disconnected. Reconnect to create a task..."
+          }
           class="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+          disabled={!props.hostConnected}
         />
+        <Show when={!props.hostConnected}>
+          <div class="mt-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-gray-100 dark:bg-gray-900/60 px-3 py-2 text-sm text-gray-700 dark:text-gray-300">
+            This host is disconnected. Task creation will resume when it reconnects.
+          </div>
+        </Show>
         <div class="mt-3 flex justify-end">
           <button
             type="submit"
-            disabled={loading() || !prompt().trim()}
+            disabled={!props.hostConnected || loading() || !prompt().trim()}
             class="rounded-lg bg-blue-600 px-5 py-2 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading() ? "Creating..." : "Create Task"}
@@ -1107,13 +1133,15 @@ export default function Workspace() {
   const hostsData = createMemo(() => hosts.latest ?? hosts() ?? []);
   const environmentsData = createMemo(() => environments.latest ?? environments() ?? []);
   const tasksData = createMemo(() => tasks.latest ?? tasks() ?? []);
-  const hostsById = createMemo(() => new Map(hostsData().map((host) => [host.host, host])));
-  const hostIds = createMemo(() => hostsData().map((host) => host.host));
-  const environmentsById = createMemo(() =>
-    new Map(environmentsData().map((env) => [`${env.host}::${env.name}`, env]))
-  );
-  const environmentIds = createMemo(() => environmentsData().map((env) => `${env.host}::${env.name}`));
-  const tasksById = createMemo(() => new Map(tasksData().map((task) => [task.id, task])));
+  const [knownHosts, setKnownHosts] = createSignal<Record<string, Host>>({});
+  const [knownEnvironments, setKnownEnvironments] = createSignal<Record<string, Environment>>({});
+  const [knownTasks, setKnownTasks] = createSignal<Record<string, Task>>({});
+  const hostsById = createMemo(() => new Map(Object.entries(knownHosts())));
+  const hostIds = createMemo(() => Object.keys(knownHosts()).sort((a, b) => a.localeCompare(b)));
+  const connectedHostIds = createMemo(() => new Set(hostsData().map((host) => host.host)));
+  const environmentsById = createMemo(() => new Map(Object.entries(knownEnvironments())));
+  const environmentIds = createMemo(() => Object.keys(knownEnvironments()).sort((a, b) => a.localeCompare(b)));
+  const tasksById = createMemo(() => new Map(Object.entries(knownTasks())));
   const [expanded, setExpanded] = createSignal<Record<string, boolean>>({});
   const [hasExpandedRunningTasks, setHasExpandedRunningTasks] = createSignal(false);
   const [taskNameOverrides, setTaskNameOverrides] = createSignal<Record<string, string>>({});
@@ -1129,6 +1157,42 @@ export default function Workspace() {
       refetchTasks();
     }, 4000);
     onCleanup(() => clearInterval(id));
+  });
+
+  createEffect(() => {
+    setKnownHosts((prev) => {
+      const next = { ...prev };
+      for (const host of hostsData()) {
+        next[host.host] = host;
+      }
+      return next;
+    });
+  });
+
+  createEffect(() => {
+    const connectedHosts = connectedHostIds();
+    setKnownEnvironments((prev) => {
+      const next = Object.fromEntries(
+        Object.entries(prev).filter(([, env]) => !connectedHosts.has(env.host))
+      );
+      for (const env of environmentsData()) {
+        next[`${env.host}::${env.name}`] = env;
+      }
+      return next;
+    });
+  });
+
+  createEffect(() => {
+    const connectedHosts = connectedHostIds();
+    setKnownTasks((prev) => {
+      const next = Object.fromEntries(
+        Object.entries(prev).filter(([, task]) => !connectedHosts.has(task.host))
+      );
+      for (const task of tasksData()) {
+        next[task.id] = task;
+      }
+      return next;
+    });
   });
 
   createEffect(() => {
@@ -1155,7 +1219,7 @@ export default function Workspace() {
 
   const tasksByEnvironment = createMemo(() => {
     const grouped: Record<string, string[]> = {};
-    for (const task of tasksData()) {
+    for (const task of Object.values(knownTasks())) {
       const key = `${task.host}::${task.environment}`;
       if (!grouped[key]) grouped[key] = [];
       grouped[key].push(task.id);
@@ -1176,7 +1240,7 @@ export default function Workspace() {
     }
 
     const runningEnvironmentIds = new Set(
-      tasksData()
+      Object.values(knownTasks())
         .filter((task) => task.status === "running")
         .map((task) => `${task.host}::${task.environment}`)
     );
@@ -1203,6 +1267,7 @@ export default function Workspace() {
     const currentMode = mode();
     return currentMode.kind === "task" ? currentMode.taskId : null;
   });
+  const isHostConnected = (host: string) => connectedHostIds().has(host);
 
   const rememberRenamedTask = async (taskId: string, name: string) => {
     setTaskNameOverrides((prev) => ({ ...prev, [taskId]: name }));
@@ -1224,11 +1289,23 @@ export default function Workspace() {
           <For each={hostIds()}>
             {(hostId) => {
               const host = createMemo(() => hostsById().get(hostId));
+              const connected = createMemo(() => isHostConnected(hostId));
               return (
-                <div class="rounded px-2 py-1 text-xs text-gray-700 dark:text-gray-300">
+                <div
+                  class={`rounded px-2 py-1 text-xs ${
+                    connected()
+                      ? "text-gray-700 dark:text-gray-300"
+                      : "text-gray-400 dark:text-gray-500"
+                  }`}
+                >
                   <div class="font-medium">{host()?.host}</div>
                   <Show when={host() && host()!.host !== host()!.hostname}>
                     <div class="text-[11px] text-gray-500 dark:text-gray-400">{host()?.hostname}</div>
+                  </Show>
+                  <Show when={!connected()}>
+                    <div class="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                      Disconnected
+                    </div>
                   </Show>
                 </div>
               );
@@ -1264,12 +1341,17 @@ export default function Workspace() {
       <For each={environmentIds()}>
         {(environmentId) => {
           const env = createMemo(() => environmentsById().get(environmentId));
+          const hostConnected = createMemo(() => isHostConnected(env()?.host ?? ""));
           return (
             <div class="mb-2">
               <div class="flex items-center justify-between px-2 py-2">
                 <button
                   onClick={() => toggleEnvironment(environmentId)}
-                  class="flex items-center gap-2 text-sm font-medium text-gray-800 dark:text-gray-200"
+                  class={`flex items-center gap-2 text-sm font-medium ${
+                    hostConnected()
+                      ? "text-gray-800 dark:text-gray-200"
+                      : "text-gray-400 dark:text-gray-500"
+                  }`}
                   title={env()?.directory || env()?.name || ""}
                 >
                   <span
@@ -1290,6 +1372,7 @@ export default function Workspace() {
                       setMobileMenuOpen(false);
                     }
                   }}
+                  disabled={!hostConnected()}
                   class="rounded-md border border-gray-300 dark:border-gray-600 px-2 py-0.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-800"
                   title={`Create task in ${env()?.directory || env()?.name}`}
                 >
@@ -1302,6 +1385,7 @@ export default function Workspace() {
                   <For each={tasksByEnvironment()[environmentId] || []}>
                     {(taskId) => {
                       const task = createMemo(() => tasksById().get(taskId));
+                      const hostConnected = createMemo(() => isHostConnected(task()?.host ?? ""));
                       return (
                         <div
                           role="button"
@@ -1325,14 +1409,22 @@ export default function Workspace() {
                           }}
                           class={`w-full rounded-md border px-2 py-2 text-left ${
                             selectedTaskId() === taskId
-                              ? "border-blue-500 bg-blue-50 dark:bg-blue-950/30"
-                              : "border-transparent hover:border-gray-200 dark:hover:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+                              ? hostConnected()
+                                ? "border-blue-500 bg-blue-50 dark:bg-blue-950/30"
+                                : "border-gray-300 bg-gray-100 dark:border-gray-700 dark:bg-gray-900/60"
+                              : hostConnected()
+                                ? "border-transparent hover:border-gray-200 dark:hover:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+                                : "border-transparent bg-gray-100/80 dark:bg-gray-900/50 opacity-70"
                           }`}
                         >
                           <EditableTaskName
                             taskId={taskId}
                             name={taskNameOverrides()[taskId] ?? task()?.name ?? ""}
-                            class="truncate text-sm font-medium text-gray-900 dark:text-gray-100"
+                            class={`truncate text-sm font-medium ${
+                              hostConnected()
+                                ? "text-gray-900 dark:text-gray-100"
+                                : "text-gray-500 dark:text-gray-400"
+                            }`}
                             inputClass="w-full rounded border border-blue-400 bg-white px-1 py-0.5 text-sm font-medium text-gray-900 outline-none dark:border-blue-500 dark:bg-gray-900 dark:text-gray-100"
                             onRenamed={(name) => rememberRenamedTask(taskId, name)}
                           />
@@ -1344,6 +1436,11 @@ export default function Workspace() {
                               <StatusBadge status={task()!.status} />
                             </Show>
                           </div>
+                          <Show when={!hostConnected()}>
+                            <div class="mt-1 text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                              Disconnected
+                            </div>
+                          </Show>
                         </div>
                       );
                     }}
@@ -1456,6 +1553,9 @@ export default function Workspace() {
               <NewTaskPane
                 host={(mode() as { kind: "new-task"; host: string; environment: string }).host}
                 environment={(mode() as { kind: "new-task"; host: string; environment: string }).environment}
+                hostConnected={isHostConnected(
+                  (mode() as { kind: "new-task"; host: string; environment: string }).host
+                )}
                 onCreated={(taskId) => {
                   refetchTasks();
                   setMode({ kind: "task", taskId });
@@ -1468,6 +1568,11 @@ export default function Workspace() {
               <TaskPane
                 taskId={(mode() as { kind: "task"; taskId: string }).taskId}
                 activeTab={tab}
+                hostConnected={() => {
+                  const taskId = (mode() as { kind: "task"; taskId: string }).taskId;
+                  const task = tasksById().get(taskId);
+                  return task ? isHostConnected(task.host) : false;
+                }}
                 hideDiff={isMobile()}
                 nameOverride={() => {
                   const taskId = (mode() as { kind: "task"; taskId: string }).taskId;
