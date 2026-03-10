@@ -8,7 +8,7 @@ use slopcoder_core::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
 use tokio::time::timeout;
@@ -21,9 +21,6 @@ pub enum StateError {
 
     #[error("Host not connected: {0}")]
     HostNotConnected(String),
-
-    #[error("Host is temporarily unreachable: {0}")]
-    HostUnavailable(String),
 
     #[error("No agents are connected")]
     NoAgentsConnected,
@@ -150,28 +147,32 @@ pub struct AppState {
 struct AppStateInner {
     ui_auth_password: Option<String>,
     agent_auth_password: String,
+    list_request_timeout_secs: u64,
     agents_by_id: HashMap<Uuid, ConnectedAgent>,
     host_to_id: HashMap<String, Uuid>,
     task_hosts: HashMap<TaskId, String>,
     task_terminals: HashMap<TaskId, TaskTerminalBinding>,
     terminal_tasks: HashMap<Uuid, TaskId>,
-    list_backoff_until: HashMap<String, Instant>,
     event_channels: HashMap<TaskId, broadcast::Sender<AgentEvent>>,
     terminal_channels: HashMap<Uuid, broadcast::Sender<TerminalEvent>>,
 }
 
 impl AppState {
-    pub fn new(ui_auth_password: Option<String>, agent_auth_password: String) -> Self {
+    pub fn new(
+        ui_auth_password: Option<String>,
+        agent_auth_password: String,
+        list_request_timeout_secs: u64,
+    ) -> Self {
         Self {
             inner: Arc::new(RwLock::new(AppStateInner {
                 ui_auth_password,
                 agent_auth_password,
+                list_request_timeout_secs,
                 agents_by_id: HashMap::new(),
                 host_to_id: HashMap::new(),
                 task_hosts: HashMap::new(),
                 task_terminals: HashMap::new(),
                 terminal_tasks: HashMap::new(),
-                list_backoff_until: HashMap::new(),
                 event_channels: HashMap::new(),
                 terminal_channels: HashMap::new(),
             })),
@@ -184,6 +185,10 @@ impl AppState {
 
     pub async fn get_agent_auth_password(&self) -> String {
         self.inner.read().await.agent_auth_password.clone()
+    }
+
+    pub async fn get_list_request_timeout_secs(&self) -> u64 {
+        self.inner.read().await.list_request_timeout_secs
     }
 
     pub async fn register_agent(
@@ -245,7 +250,6 @@ impl AppState {
                 }
             }
         }
-        inner.list_backoff_until.remove(&agent.host);
         tracing::info!("Agent '{}' disconnected", agent.host);
         drop(inner);
 
@@ -255,18 +259,10 @@ impl AppState {
     }
 
     pub async fn list_hosts(&self) -> Vec<HostInfo> {
-        let now = Instant::now();
         let inner = self.inner.read().await;
         let mut hosts: Vec<_> = inner
             .agents_by_id
             .values()
-            .filter(|agent| {
-                !inner
-                    .list_backoff_until
-                    .get(&agent.host)
-                    .map(|until| now < *until)
-                    .unwrap_or(false)
-            })
             .map(|agent| HostInfo {
                 host: agent.host.clone(),
                 hostname: agent.hostname.clone(),
@@ -315,27 +311,6 @@ impl AppState {
         for task in tasks {
             inner.task_hosts.insert(task.id, host.to_string());
         }
-    }
-
-    pub async fn should_skip_host_list_poll(&self, host: &str, now: Instant) -> bool {
-        let inner = self.inner.read().await;
-        inner
-            .list_backoff_until
-            .get(host)
-            .map(|until| now < *until)
-            .unwrap_or(false)
-    }
-
-    pub async fn note_host_list_timeout(&self, host: &str, now: Instant, backoff: Duration) {
-        self.inner
-            .write()
-            .await
-            .list_backoff_until
-            .insert(host.to_string(), now + backoff);
-    }
-
-    pub async fn clear_host_list_backoff(&self, host: &str) {
-        self.inner.write().await.list_backoff_until.remove(host);
     }
 
     pub async fn resolve_agent_for_task(&self, task_id: TaskId) -> Option<ConnectedAgent> {
@@ -466,53 +441,12 @@ mod tests {
     use slopcoder_core::task::TaskId;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     use tokio::sync::{oneshot, Mutex};
 
     #[tokio::test]
-    async fn host_list_timeout_backoff_expires() {
-        let state = AppState::new(None, "test-password".to_string());
-        let host = "boa";
-        let now = Instant::now();
-
-        assert!(!state.should_skip_host_list_poll(host, now).await);
-        state
-            .note_host_list_timeout(host, now, Duration::from_secs(5))
-            .await;
-        assert!(
-            state
-                .should_skip_host_list_poll(host, now + Duration::from_secs(4))
-                .await
-        );
-        assert!(
-            !state
-                .should_skip_host_list_poll(host, now + Duration::from_secs(6))
-                .await
-        );
-    }
-
-    #[tokio::test]
-    async fn list_hosts_hides_backoffed_host() {
-        let state = AppState::new(None, "test-password".to_string());
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let pending: Arc<Mutex<HashMap<String, oneshot::Sender<PendingResponse>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-        let agent = state
-            .register_agent("boa-host".to_string(), Some("boa".to_string()), tx, pending)
-            .await;
-
-        assert_eq!(state.list_hosts().await.len(), 1);
-        state
-            .note_host_list_timeout(&agent.host, Instant::now(), Duration::from_secs(30))
-            .await;
-        assert!(state.list_hosts().await.is_empty());
-        state.clear_host_list_backoff(&agent.host).await;
-        assert_eq!(state.list_hosts().await.len(), 1);
-    }
-
-    #[tokio::test]
     async fn terminals_are_reused_for_task_and_host() {
-        let state = AppState::new(None, "test-password".to_string());
+        let state = AppState::new(None, "test-password".to_string(), 15);
         let task_id = TaskId::new();
 
         let (first_id, first_created) = state.ensure_task_terminal(task_id, "boa").await;
@@ -524,7 +458,7 @@ mod tests {
 
     #[tokio::test]
     async fn terminal_binding_is_cleared_when_terminal_closes() {
-        let state = AppState::new(None, "test-password".to_string());
+        let state = AppState::new(None, "test-password".to_string(), 15);
         let task_id = TaskId::new();
 
         let (terminal_id, created) = state.ensure_task_terminal(task_id, "boa").await;
@@ -546,7 +480,7 @@ mod tests {
 
     #[tokio::test]
     async fn unregister_agent_closes_bound_terminal_sessions() {
-        let state = AppState::new(None, "test-password".to_string());
+        let state = AppState::new(None, "test-password".to_string(), 15);
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let pending: Arc<Mutex<HashMap<String, oneshot::Sender<PendingResponse>>>> =
             Arc::new(Mutex::new(HashMap::new()));

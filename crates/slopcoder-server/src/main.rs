@@ -9,6 +9,79 @@ use warp::Filter;
 
 use state::AppState;
 
+const DEFAULT_LIST_REQUEST_TIMEOUT_SECS: u64 = 15;
+
+struct ServerCli {
+    addr_arg: Option<String>,
+    static_dir_arg: Option<std::path::PathBuf>,
+    ui_password_prompt: bool,
+    agent_password_prompt: bool,
+    no_password: bool,
+    explicit_ui_password: Option<String>,
+    explicit_agent_password: Option<String>,
+    list_request_timeout_secs: u64,
+}
+
+fn parse_cli_args<I>(args: I) -> ServerCli
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut args = args.into_iter();
+    let mut cli = ServerCli {
+        addr_arg: None,
+        static_dir_arg: None,
+        ui_password_prompt: false,
+        agent_password_prompt: false,
+        no_password: false,
+        explicit_ui_password: None,
+        explicit_agent_password: None,
+        list_request_timeout_secs: DEFAULT_LIST_REQUEST_TIMEOUT_SECS,
+    };
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--addr" | "--bind" => {
+                cli.addr_arg = args.next();
+            }
+            "--static-dir" | "--assets" => {
+                cli.static_dir_arg = args.next().map(std::path::PathBuf::from);
+            }
+            "--password-prompt" => {
+                cli.ui_password_prompt = true;
+            }
+            "--password" => {
+                cli.explicit_ui_password = args.next();
+            }
+            "--agent-password-prompt" => {
+                cli.agent_password_prompt = true;
+            }
+            "--agent-password" => {
+                cli.explicit_agent_password = args.next();
+            }
+            "--no-password" => {
+                cli.no_password = true;
+            }
+            "--list-request-timeout-secs" => {
+                cli.list_request_timeout_secs = args
+                    .next()
+                    .and_then(|value| value.parse().ok())
+                    .filter(|value| *value > 0)
+                    .unwrap_or(DEFAULT_LIST_REQUEST_TIMEOUT_SECS);
+            }
+            "-h" | "--help" => {
+                println!(
+                    "Usage: slopcoder-server [--addr HOST:PORT] [--static-dir PATH] [--password VALUE|--password-prompt|--no-password] [--agent-password VALUE|--agent-password-prompt] [--list-request-timeout-secs SECONDS]\n\
+Defaults: addr=127.0.0.1:8080, static-dir=frontend/dist, UI auth disabled, agent auth enabled with generated startup password, list-request-timeout-secs=15"
+                );
+                std::process::exit(0);
+            }
+            _ => {}
+        }
+    }
+
+    cli
+}
+
 #[tokio::main]
 async fn main() {
     // Initialize logging
@@ -17,57 +90,15 @@ async fn main() {
         .with(EnvFilter::from_default_env().add_directive("slopcoder=info".parse().unwrap()))
         .init();
 
-    // Parse CLI args
-    let mut args = std::env::args().skip(1);
-    let mut addr_arg: Option<String> = None;
-    let mut static_dir_arg: Option<std::path::PathBuf> = None;
-    let mut ui_password_prompt = false;
-    let mut agent_password_prompt = false;
-    let mut no_password = false;
-    let mut explicit_ui_password: Option<String> = None;
-    let mut explicit_agent_password: Option<String> = None;
+    let cli = parse_cli_args(std::env::args().skip(1));
 
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--addr" | "--bind" => {
-                addr_arg = args.next();
-            }
-            "--static-dir" | "--assets" => {
-                static_dir_arg = args.next().map(std::path::PathBuf::from);
-            }
-            "--password-prompt" => {
-                ui_password_prompt = true;
-            }
-            "--password" => {
-                explicit_ui_password = args.next();
-            }
-            "--agent-password-prompt" => {
-                agent_password_prompt = true;
-            }
-            "--agent-password" => {
-                explicit_agent_password = args.next();
-            }
-            "--no-password" => {
-                no_password = true;
-            }
-            "-h" | "--help" => {
-                println!(
-                    "Usage: slopcoder-server [--addr HOST:PORT] [--static-dir PATH] [--password VALUE|--password-prompt|--no-password] [--agent-password VALUE|--agent-password-prompt]\n\
-Defaults: addr=127.0.0.1:8080, static-dir=frontend/dist, UI auth disabled, agent auth enabled with generated startup password"
-                );
-                return;
-            }
-            _ => {}
-        }
-    }
-
-    let ui_auth_password = if no_password {
+    let ui_auth_password = if cli.no_password {
         tracing::warn!("UI authentication disabled (--no-password).");
         None
-    } else if let Some(password) = explicit_ui_password {
+    } else if let Some(password) = cli.explicit_ui_password {
         println!("UI password: {}", password);
         Some(password)
-    } else if ui_password_prompt {
+    } else if cli.ui_password_prompt {
         print!("Enter UI password: ");
         io::stdout().flush().expect("Failed to flush stdout");
         let mut input = String::new();
@@ -85,9 +116,9 @@ Defaults: addr=127.0.0.1:8080, static-dir=frontend/dist, UI auth disabled, agent
         None
     };
 
-    let agent_auth_password = if let Some(password) = explicit_agent_password {
+    let agent_auth_password = if let Some(password) = cli.explicit_agent_password {
         password
-    } else if agent_password_prompt {
+    } else if cli.agent_password_prompt {
         print!("Enter slopagent connection password: ");
         io::stdout().flush().expect("Failed to flush stdout");
         let mut input = String::new();
@@ -105,7 +136,11 @@ Defaults: addr=127.0.0.1:8080, static-dir=frontend/dist, UI auth disabled, agent
     };
     println!("Slopagent password: {}", agent_auth_password);
 
-    let state = AppState::new(ui_auth_password, agent_auth_password);
+    let state = AppState::new(
+        ui_auth_password,
+        agent_auth_password,
+        cli.list_request_timeout_secs,
+    );
 
     // Build API routes
     let api_routes = routes::routes(state);
@@ -119,7 +154,8 @@ Defaults: addr=127.0.0.1:8080, static-dir=frontend/dist, UI auth disabled, agent
     let api_routes = api_routes.with(cors);
 
     // Static file serving for frontend
-    let static_dir = static_dir_arg
+    let static_dir = cli
+        .static_dir_arg
         .or_else(|| {
             std::env::var("SLOPCODER_STATIC_DIR")
                 .ok()
@@ -137,7 +173,8 @@ Defaults: addr=127.0.0.1:8080, static-dir=frontend/dist, UI auth disabled, agent
     let routes = api_routes.or(static_files).or(spa_fallback);
 
     // Get address from args/env or use default (127.0.0.1:8080)
-    let addr: SocketAddr = addr_arg
+    let addr: SocketAddr = cli
+        .addr_arg
         .or_else(|| std::env::var("SLOPCODER_ADDR").ok())
         .and_then(|s| s.parse().ok())
         .unwrap_or_else(|| ([127, 0, 0, 1], 8080).into());
@@ -145,4 +182,27 @@ Defaults: addr=127.0.0.1:8080, static-dir=frontend/dist, UI auth disabled, agent
     tracing::info!("Starting server at http://{}", addr);
 
     warp::serve(routes).run(addr).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_cli_args, DEFAULT_LIST_REQUEST_TIMEOUT_SECS};
+
+    #[test]
+    fn parse_cli_uses_default_list_request_timeout() {
+        let cli = parse_cli_args(Vec::<String>::new());
+        assert_eq!(
+            cli.list_request_timeout_secs,
+            DEFAULT_LIST_REQUEST_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn parse_cli_accepts_list_request_timeout_override() {
+        let cli = parse_cli_args(vec![
+            "--list-request-timeout-secs".to_string(),
+            "22".to_string(),
+        ]);
+        assert_eq!(cli.list_request_timeout_secs, 22);
+    }
 }

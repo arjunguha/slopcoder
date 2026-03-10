@@ -49,6 +49,9 @@ Start the coordinator:
 slopcoder-server --addr 127.0.0.1:8080
 ```
 
+Coordinator list polling uses a per-host timeout of 15 seconds by default. You
+can override it with `--list-request-timeout-secs`.
+
 `slopcoder-server` uses two password scopes:
 - `slopagent` connection password: always required. By default it is generated at startup and printed as `Slopagent password: ...`. You can override with `--agent-password` or `--agent-password-prompt`.
 - Browser/UI password: optional. Enable with `--password` or `--password-prompt` (or keep disabled by default / force off with `--no-password`).
