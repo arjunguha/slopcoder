@@ -6,6 +6,17 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+const MAX_ITEM_TEXT_CHARS: usize = 4_000;
+const MAX_ITEM_NAME_CHARS: usize = 512;
+const MAX_ITEM_ARGUMENTS_CHARS: usize = 4_000;
+const MAX_ITEM_OUTPUT_CHARS: usize = 4_000;
+const MAX_COMMAND_OUTPUT_LINES: usize = 5;
+const MAX_COMMAND_OUTPUT_CHARS: usize = 1_000;
+const MAX_EXTRA_STRING_CHARS: usize = 1_000;
+const MAX_EXTRA_ARRAY_ITEMS: usize = 50;
+const MAX_EXTRA_OBJECT_KEYS: usize = 50;
+const MAX_EXTRA_DEPTH: usize = 6;
+
 /// A parsed event from an agent JSONL stream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -53,31 +64,56 @@ pub enum AgentEvent {
 impl AgentEvent {
     /// Parse a JSONL line into an AgentEvent (Codex format).
     pub fn parse_codex(line: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(line)
+        serde_json::from_str(line).map(Self::normalize)
     }
 
     /// Parse a JSONL line into AgentEvents (Claude format).
     pub fn parse_claude(line: &str) -> Result<Vec<Self>, serde_json::Error> {
         let parsed: ClaudeStreamEvent = serde_json::from_str(line)?;
-        Ok(parsed.into_agent_events())
+        Ok(parsed
+            .into_agent_events()
+            .into_iter()
+            .map(Self::normalize)
+            .collect())
     }
 
     /// Parse a JSONL line into AgentEvents (Cursor format).
     pub fn parse_cursor(line: &str) -> Result<Vec<Self>, serde_json::Error> {
         let parsed: CursorStreamEvent = serde_json::from_str(line)?;
-        Ok(parsed.into_agent_events())
+        Ok(parsed
+            .into_agent_events()
+            .into_iter()
+            .map(Self::normalize)
+            .collect())
     }
 
     /// Parse a JSONL line into AgentEvents (OpenCode format).
     pub fn parse_opencode(line: &str) -> Result<Vec<Self>, serde_json::Error> {
         let parsed: OpencodeStreamEvent = serde_json::from_str(line)?;
-        Ok(parsed.into_agent_events())
+        Ok(parsed
+            .into_agent_events()
+            .into_iter()
+            .map(Self::normalize)
+            .collect())
     }
 
     /// Parse a JSONL line into AgentEvents (Gemini format).
     pub fn parse_gemini(line: &str) -> Result<Vec<Self>, serde_json::Error> {
         let parsed: GeminiStreamEvent = serde_json::from_str(line)?;
-        Ok(parsed.into_agent_events())
+        Ok(parsed
+            .into_agent_events()
+            .into_iter()
+            .map(Self::normalize)
+            .collect())
+    }
+
+    pub fn normalize(self) -> Self {
+        match self {
+            AgentEvent::ItemCompleted { item } => AgentEvent::ItemCompleted {
+                item: item.normalize(),
+            },
+            other => other,
+        }
     }
 
     /// Extract the session ID if this is a session.started event.
@@ -151,6 +187,10 @@ pub struct CompletedItem {
     #[serde(default)]
     pub output: Option<String>,
 
+    /// Whether any part of this item was truncated during normalization.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub truncated: bool,
+
     /// Additional fields we don't explicitly model.
     /// Note: This uses a custom serializer to handle non-object values gracefully.
     /// The `#[serde(flatten)]` attribute only works with maps/objects, so we skip
@@ -200,6 +240,166 @@ impl CompletedItem {
     pub fn is_tool_output(&self) -> bool {
         self.item_type == "tool_output"
     }
+
+    pub fn normalize(mut self) -> Self {
+        let mut truncated = false;
+        self.text = truncate_optional_chars(self.text.take(), MAX_ITEM_TEXT_CHARS, &mut truncated);
+        self.name = truncate_optional_chars(self.name.take(), MAX_ITEM_NAME_CHARS, &mut truncated);
+        self.arguments = truncate_optional_chars(
+            self.arguments.take(),
+            MAX_ITEM_ARGUMENTS_CHARS,
+            &mut truncated,
+        );
+        self.output =
+            truncate_optional_chars(self.output.take(), MAX_ITEM_OUTPUT_CHARS, &mut truncated);
+
+        if self.item_type == "command_execution" {
+            self.extra = truncate_command_execution_extra(self.extra, &mut truncated);
+        } else {
+            self.extra = truncate_json_value(self.extra, 0, &mut truncated);
+        }
+
+        self.truncated |= truncated;
+        self
+    }
+}
+
+fn truncate_optional_chars(
+    value: Option<String>,
+    max_chars: usize,
+    truncated: &mut bool,
+) -> Option<String> {
+    value.map(|text| truncate_chars(&text, max_chars, truncated))
+}
+
+fn truncate_chars(value: &str, max_chars: usize, truncated: &mut bool) -> String {
+    let char_count = value.chars().count();
+    if char_count <= max_chars {
+        return value.to_string();
+    }
+    *truncated = true;
+    let clipped = value.chars().take(max_chars).collect::<String>();
+    format!("{clipped}... [truncated]")
+}
+
+fn truncate_lines_and_chars(
+    value: &str,
+    max_lines: usize,
+    max_chars: usize,
+    truncated: &mut bool,
+) -> String {
+    let mut clipped_by_lines = false;
+    let lines = value.lines().collect::<Vec<_>>();
+    let limited_lines = if lines.len() > max_lines {
+        clipped_by_lines = true;
+        &lines[..max_lines]
+    } else {
+        &lines[..]
+    };
+    let joined = limited_lines.join("\n");
+    let result = truncate_chars(&joined, max_chars, truncated);
+    if clipped_by_lines {
+        *truncated = true;
+        if result.ends_with("... [truncated]") {
+            result
+        } else {
+            format!("{result}\n... [truncated]")
+        }
+    } else {
+        result
+    }
+}
+
+fn truncate_command_execution_extra(
+    value: serde_json::Value,
+    truncated: &mut bool,
+) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut normalized = serde_json::Map::with_capacity(map.len());
+            for (key, value) in map {
+                let next_value = match key.as_str() {
+                    "command" => match value {
+                        serde_json::Value::String(text) => serde_json::Value::String(
+                            truncate_chars(&text, MAX_ITEM_ARGUMENTS_CHARS, truncated),
+                        ),
+                        other => truncate_json_value(other, 1, truncated),
+                    },
+                    "aggregated_output" | "stdout" | "stderr" | "output" => match value {
+                        serde_json::Value::String(text) => {
+                            serde_json::Value::String(truncate_lines_and_chars(
+                                &text,
+                                MAX_COMMAND_OUTPUT_LINES,
+                                MAX_COMMAND_OUTPUT_CHARS,
+                                truncated,
+                            ))
+                        }
+                        other => truncate_json_value(other, 1, truncated),
+                    },
+                    _ => truncate_json_value(value, 1, truncated),
+                };
+                normalized.insert(key, next_value);
+            }
+            serde_json::Value::Object(normalized)
+        }
+        other => truncate_json_value(other, 0, truncated),
+    }
+}
+
+fn truncate_json_value(
+    value: serde_json::Value,
+    depth: usize,
+    truncated: &mut bool,
+) -> serde_json::Value {
+    if depth >= MAX_EXTRA_DEPTH {
+        *truncated = true;
+        return serde_json::Value::String("[truncated depth]".to_string());
+    }
+
+    match value {
+        serde_json::Value::String(text) => {
+            serde_json::Value::String(truncate_chars(&text, MAX_EXTRA_STRING_CHARS, truncated))
+        }
+        serde_json::Value::Array(values) => {
+            let original_len = values.len();
+            let mut normalized = values
+                .into_iter()
+                .take(MAX_EXTRA_ARRAY_ITEMS)
+                .map(|value| truncate_json_value(value, depth + 1, truncated))
+                .collect::<Vec<_>>();
+            if original_len > MAX_EXTRA_ARRAY_ITEMS {
+                *truncated = true;
+                normalized.push(serde_json::Value::String("... [truncated]".to_string()));
+            }
+            serde_json::Value::Array(normalized)
+        }
+        serde_json::Value::Object(map) => {
+            let original_len = map.len();
+            let mut normalized = serde_json::Map::new();
+            for (key, value) in map.into_iter().take(MAX_EXTRA_OBJECT_KEYS) {
+                let key = if key.chars().count() > MAX_ITEM_NAME_CHARS {
+                    *truncated = true;
+                    truncate_chars(&key, MAX_ITEM_NAME_CHARS, truncated)
+                } else {
+                    key
+                };
+                normalized.insert(key, truncate_json_value(value, depth + 1, truncated));
+            }
+            if original_len > MAX_EXTRA_OBJECT_KEYS {
+                *truncated = true;
+                normalized.insert(
+                    "...".to_string(),
+                    serde_json::Value::String("[truncated]".to_string()),
+                );
+            }
+            serde_json::Value::Object(normalized)
+        }
+        other => other,
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Token usage statistics.
@@ -331,6 +531,7 @@ impl ClaudeMessage {
                             arguments,
                             call_id,
                             output: None,
+                            truncated: false,
                             extra: serde_json::Value::Null,
                         },
                     });
@@ -349,6 +550,7 @@ impl ClaudeMessage {
                     arguments: None,
                     call_id: None,
                     output: None,
+                    truncated: false,
                     extra: serde_json::Value::Null,
                 },
             });
@@ -385,6 +587,7 @@ impl ClaudeUserMessage {
                         arguments: None,
                         call_id: block.tool_use_id,
                         output: block.content.or(block.text),
+                        truncated: false,
                         extra: tool_use_result.clone().unwrap_or(serde_json::Value::Null),
                     },
                 });
@@ -502,6 +705,7 @@ impl CursorStreamEvent {
                             arguments: None,
                             call_id: None,
                             output: None,
+                            truncated: false,
                             extra: serde_json::Value::Null,
                         },
                     }]
@@ -569,6 +773,7 @@ impl CursorMessage {
                             arguments,
                             call_id,
                             output: None,
+                            truncated: false,
                             extra: serde_json::Value::Null,
                         },
                     });
@@ -587,6 +792,7 @@ impl CursorMessage {
                     arguments: None,
                     call_id: None,
                     output: None,
+                    truncated: false,
                     extra: serde_json::Value::Null,
                 },
             });
@@ -730,6 +936,7 @@ impl OpencodeStreamEvent {
                                 arguments: None,
                                 call_id: None,
                                 output: None,
+                                truncated: false,
                                 extra: serde_json::Value::Null,
                             },
                         }];
@@ -755,6 +962,7 @@ impl OpencodeStreamEvent {
                             arguments,
                             call_id: part.call_id,
                             output,
+                            truncated: false,
                             extra: serde_json::Value::Null,
                         },
                     }];
@@ -852,6 +1060,7 @@ impl GeminiStreamEvent {
                             arguments: None,
                             call_id: None,
                             output: None,
+                            truncated: false,
                             extra: serde_json::Value::Null,
                         },
                     }]
@@ -876,6 +1085,7 @@ impl GeminiStreamEvent {
                         arguments,
                         call_id: Some(tool_id),
                         output: None,
+                        truncated: false,
                         extra: serde_json::Value::Null,
                     },
                 }]
@@ -891,6 +1101,7 @@ impl GeminiStreamEvent {
                     arguments: None,
                     call_id: Some(tool_id),
                     output,
+                    truncated: false,
                     extra: serde_json::Value::Null,
                 },
             }],
@@ -974,6 +1185,45 @@ mod tests {
                 assert_eq!(item.text, Some("OK".to_string()));
             }
             _ => panic!("Expected ItemCompleted event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_command_execution_truncates_output_before_serialization() {
+        let json = r#"{"type":"item.completed","item":{"id":"cmd_1","type":"command_execution","command":"cat big.log","aggregated_output":"1\n2\n3\n4\n5\n6"}}"#;
+        let event = AgentEvent::parse_codex(json).unwrap();
+        match event {
+            AgentEvent::ItemCompleted { item } => {
+                assert_eq!(item.item_type, "command_execution");
+                assert!(item.truncated);
+                let output = item
+                    .extra
+                    .get("aggregated_output")
+                    .and_then(|value| value.as_str())
+                    .expect("command output string");
+                assert_eq!(output, "1\n2\n3\n4\n5\n... [truncated]");
+            }
+            _ => panic!("Expected ItemCompleted event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_tool_call_truncates_large_arguments() {
+        let long_text = "x".repeat(MAX_ITEM_ARGUMENTS_CHARS + 100);
+        let json = format!(
+            r#"{{"type":"assistant","message":{{"id":"msg_tool","content":[{{"type":"tool_use","id":"toolu_1","name":"write","input":{{"content":"{}","filePath":"/tmp/test.txt"}}}}]}}}}"#,
+            long_text
+        );
+        let events = AgentEvent::parse_claude(&json).unwrap();
+        match &events[0] {
+            AgentEvent::ItemCompleted { item } => {
+                assert_eq!(item.item_type, "tool_call");
+                assert!(item.truncated);
+                let arguments = item.arguments.as_deref().expect("arguments");
+                assert!(arguments.len() < long_text.len());
+                assert!(arguments.ends_with("... [truncated]"));
+            }
+            other => panic!("Expected tool_call event, got {:?}", other),
         }
     }
 

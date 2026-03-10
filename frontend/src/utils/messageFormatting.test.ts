@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import {
-  clipText,
   formatCommandExecutionPreview,
   prettyPrintJsonString,
   prettyPrintJsonValue,
@@ -41,15 +40,6 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "clipText truncates by lines and characters",
-    run: () => {
-      const value = ["one", "two", "three", "four"].join("\n");
-      const result = clipText(value, 2, 6);
-      assert.ok(result.clipped);
-      assert.ok(result.text.length <= 6);
-    },
-  },
-  {
     name: "summarizeJsonShape reports arrays",
     run: () => {
       const result = summarizeJsonShape("[1,2,3]");
@@ -58,26 +48,14 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "formatCommandExecutionPreview prefers explicit command and limits output to five lines",
+    name: "formatCommandExecutionPreview prefers explicit command",
     run: () => {
       const result = formatCommandExecutionPreview({
         command: "git status",
         aggregated_output: "1\n2\n3\n4\n5\n6",
       });
       assert.equal(result.command, "git status");
-      assert.equal(result.outputText, "1\n2\n3\n4\n5");
-      assert.equal(result.clipped, true);
-    },
-  },
-  {
-    name: "formatCommandExecutionPreview limits output to 1000 characters",
-    run: () => {
-      const result = formatCommandExecutionPreview({
-        command: "cat big.log",
-        aggregated_output: "x".repeat(1200),
-      });
-      assert.equal(result.outputText.length, 1000);
-      assert.equal(result.clipped, true);
+      assert.equal(result.outputText, "1\n2\n3\n4\n5\n6");
     },
   },
   {
@@ -90,7 +68,6 @@ const tests: TestCase[] = [
       });
       assert.equal(result.command, "ls -la");
       assert.equal(result.outputText, "hello\nworld");
-      assert.equal(result.clipped, false);
     },
   },
 ];

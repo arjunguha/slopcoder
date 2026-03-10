@@ -194,7 +194,8 @@ Behavior:
 - Follow-up prompt form keeps the send button on-screen by allowing the textarea to shrink and forcing the button to remain non-shrinking.
 - On mobile, the app shell is clamped to the visual viewport (`100dvh` / `100vw`) with page-level overflow hidden, so the browser window does not scroll and the conversation transcript remains the primary vertical scroller.
 - Live conversation streaming avoids subscription churn during task polling to reduce update flicker.
-- `command_execution` transcript items now render as command cards showing the command text and output preview truncated to 5 lines and 1000 characters (with a generic truncation indicator).
+- Transcript item normalization happens in Rust before events are persisted or streamed to the browser, so oversized message/tool payloads are clipped on the agent side instead of being shipped raw to the client.
+- `command_execution` transcript items now render as command cards showing the command text and a Rust-truncated output preview capped at 5 lines and 1000 characters, with a generic truncation indicator driven by the transcript item.
 - Task detail tabs now include `Terminal` beside `Conversation` and `Diff` on desktop.
 - Terminal uses `xterm` over a coordinator websocket that proxies I/O to the owning `slopagent` host.
 - Terminal starts in the selected task workspace directory on that remote host (`worktree_path` for isolated tasks, environment directory for in-place tasks).

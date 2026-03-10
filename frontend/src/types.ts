@@ -88,6 +88,7 @@ export interface CompletedItem {
   arguments?: string;
   call_id?: string;
   output?: string;
+  truncated?: boolean;
   command?: string;
   aggregated_output?: string;
   exit_code?: number;

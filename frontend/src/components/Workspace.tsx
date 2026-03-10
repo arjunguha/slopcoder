@@ -303,7 +303,7 @@ function CompletedItemRow(props: { item: CompletedItem }) {
             {preview.outputText}
           </pre>
         </Show>
-        <Show when={preview.clipped}>
+        <Show when={item.truncated}>
           <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">Output truncated.</div>
         </Show>
       </div>

@@ -1399,7 +1399,7 @@ async fn read_output_events_page(
             if window.len() == window_size {
                 window.pop_front();
             }
-            window.push_back(event);
+            window.push_back(event.normalize());
         }
     }
 

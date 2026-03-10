@@ -6,11 +6,7 @@ export type PrettyPrintResult = {
 export type CommandExecutionPreview = {
   command: string | null;
   outputText: string;
-  clipped: boolean;
 };
-
-const DEFAULT_COMMAND_PREVIEW_MAX_LINES = 5;
-const DEFAULT_COMMAND_PREVIEW_MAX_CHARS = 1000;
 
 type PrettyPrintOptions = {
   maxStringLength: number;
@@ -33,18 +29,6 @@ export function parseJson(value?: string): unknown | null {
   } catch {
     return null;
   }
-}
-
-export function clipText(value: string, maxLines: number, maxChars: number) {
-  const lines = value.split(/\r?\n/);
-  const limitedLines = lines.slice(0, maxLines);
-  let clipped = lines.length > maxLines;
-  let text = limitedLines.join("\n");
-  if (text.length > maxChars) {
-    text = text.slice(0, maxChars);
-    clipped = true;
-  }
-  return { text, clipped };
 }
 
 export function summarizeOutput(output?: string) {
@@ -99,9 +83,7 @@ export function formatCommandExecutionPreview(
     output?: string;
     stdout?: string;
     stderr?: string;
-  },
-  maxLines = DEFAULT_COMMAND_PREVIEW_MAX_LINES,
-  maxChars = DEFAULT_COMMAND_PREVIEW_MAX_CHARS
+  }
 ): CommandExecutionPreview {
   const command = firstNonEmpty(item.command, commandFromArguments(item.arguments));
 
@@ -109,9 +91,8 @@ export function formatCommandExecutionPreview(
     .filter((value): value is string => typeof value === "string" && value.length > 0)
     .join("\n");
   const output = firstNonEmpty(item.aggregated_output, item.output, stdoutAndStderr) ?? "";
-  const { text: outputText, clipped } = clipText(output, maxLines, maxChars);
 
-  return { command, outputText, clipped };
+  return { command, outputText: output };
 }
 
 function truncateString(value: string, maxLength: number) {
