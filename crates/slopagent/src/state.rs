@@ -1,7 +1,7 @@
 use slopcoder_core::{
     anyagent::AnyAgentConfig,
     environment::{Environment, EnvironmentConfig, EnvironmentError},
-    persistence::PersistentTaskStore,
+    persistence::{PendingEnvironmentSave, PersistentTaskStore},
     task::{Task, TaskId},
     PersistenceError,
 };
@@ -90,6 +90,13 @@ struct AppStateInner {
 }
 
 impl AppState {
+    async fn persist_snapshot(snapshot: PendingEnvironmentSave) -> Result<(), StateError> {
+        snapshot
+            .persist()
+            .await
+            .map_err(StateError::PersistenceError)
+    }
+
     pub async fn new(
         config: EnvironmentConfig,
         repo_root: Option<PathBuf>,
@@ -312,11 +319,19 @@ impl AppState {
     }
 
     pub async fn list_tasks(&self) -> Vec<Task> {
-        {
+        let stale_cleanup = {
             let mut inner = self.inner.write().await;
-            if let Err(e) = inner.tasks.cleanup_stale_tasks().await {
-                tracing::warn!("Failed to cleanup stale tasks: {}", e);
+            inner.tasks.cleanup_stale_tasks_and_snapshot()
+        };
+        match stale_cleanup {
+            Ok((_, snapshots)) => {
+                for snapshot in snapshots {
+                    if let Err(e) = Self::persist_snapshot(snapshot).await {
+                        tracing::warn!("Failed to cleanup stale tasks: {}", e);
+                    }
+                }
             }
+            Err(e) => tracing::warn!("Failed to cleanup stale tasks: {}", e),
         }
 
         self.inner
@@ -340,18 +355,23 @@ impl AppState {
     pub async fn insert_task(&self, task: Task) -> Result<(), StateError> {
         self.ensure_environment_registered(&task.environment)
             .await?;
-        self.inner.write().await.tasks.insert(task).await?;
-        Ok(())
+        let snapshot = {
+            let mut inner = self.inner.write().await;
+            inner.tasks.insert_and_snapshot(task)?
+        };
+        Self::persist_snapshot(snapshot).await
     }
 
     pub async fn remove_task(&self, id: TaskId) -> Result<Option<Task>, StateError> {
-        let mut inner = self.inner.write().await;
-        inner.interrupt_channels.remove(&id);
-        inner
-            .tasks
-            .remove(id)
-            .await
-            .map_err(StateError::PersistenceError)
+        let (removed, snapshot) = {
+            let mut inner = self.inner.write().await;
+            inner.interrupt_channels.remove(&id);
+            inner.tasks.remove_and_snapshot(id)?
+        };
+        if let Some(snapshot) = snapshot {
+            Self::persist_snapshot(snapshot).await?;
+        }
+        Ok(removed)
     }
 
     pub async fn set_task_session_id(
@@ -359,10 +379,17 @@ impl AppState {
         id: TaskId,
         session_id: Uuid,
     ) -> Result<(), StateError> {
-        let mut inner = self.inner.write().await;
-        if let Some(task) = inner.tasks.get_mut(id) {
-            task.session_id = Some(session_id);
-            inner.tasks.save_task(id).await?;
+        let snapshot = {
+            let mut inner = self.inner.write().await;
+            if let Some(task) = inner.tasks.get_mut(id) {
+                task.session_id = Some(session_id);
+                inner.tasks.save_task_snapshot(id)?
+            } else {
+                return Err(StateError::TaskNotFound(id));
+            }
+        };
+        if let Some(snapshot) = snapshot {
+            Self::persist_snapshot(snapshot).await?;
             Ok(())
         } else {
             Err(StateError::TaskNotFound(id))
@@ -375,59 +402,84 @@ impl AppState {
             return Err(StateError::InvalidTaskName);
         }
 
-        let mut inner = self.inner.write().await;
-        if let Some(task) = inner.tasks.get_mut(id) {
-            task.rename(name.to_string());
-            let updated = task.clone();
-            inner.tasks.save_task(id).await?;
-            Ok(updated)
-        } else {
-            Err(StateError::TaskNotFound(id))
+        let (updated, snapshot) = {
+            let mut inner = self.inner.write().await;
+            if let Some(task) = inner.tasks.get_mut(id) {
+                task.rename(name.to_string());
+                let updated = task.clone();
+                let snapshot = inner.tasks.save_task_snapshot(id)?;
+                (updated, snapshot)
+            } else {
+                return Err(StateError::TaskNotFound(id));
+            }
+        };
+        if let Some(snapshot) = snapshot {
+            Self::persist_snapshot(snapshot).await?;
         }
+        Ok(updated)
     }
 
     pub async fn start_task_run(&self, id: TaskId, prompt: String) -> Result<(), StateError> {
-        let mut inner = self.inner.write().await;
+        let snapshot = {
+            let mut inner = self.inner.write().await;
 
-        if !inner.tasks.validate_task_worktree(id) {
-            return Err(StateError::WorktreeMissing(id));
-        }
-
-        if let Some(task) = inner.tasks.get_mut(id) {
-            if task.can_run() {
-                task.start_run(prompt);
-                inner.tasks.save_task(id).await?;
-                Ok(())
-            } else {
-                Err(StateError::TaskNotReady)
+            if !inner.tasks.validate_task_worktree(id) {
+                return Err(StateError::WorktreeMissing(id));
             }
-        } else {
-            Err(StateError::TaskNotFound(id))
+
+            if let Some(task) = inner.tasks.get_mut(id) {
+                if task.can_run() {
+                    task.start_run(prompt);
+                    inner.tasks.save_task_snapshot(id)?
+                } else {
+                    return Err(StateError::TaskNotReady);
+                }
+            } else {
+                return Err(StateError::TaskNotFound(id));
+            }
+        };
+        if let Some(snapshot) = snapshot {
+            Self::persist_snapshot(snapshot).await?;
         }
+        Ok(())
     }
 
     pub async fn complete_task_run(&self, id: TaskId, success: bool) -> Result<(), StateError> {
-        let mut inner = self.inner.write().await;
-        if let Some(task) = inner.tasks.get_mut(id) {
-            task.complete_run(success);
-            inner.tasks.save_task(id).await?;
+        let snapshot = {
+            let mut inner = self.inner.write().await;
+            let snapshot = if let Some(task) = inner.tasks.get_mut(id) {
+                task.complete_run(success);
+                inner.tasks.save_task_snapshot(id)?
+            } else {
+                None
+            };
+            inner.interrupt_channels.remove(&id);
+            snapshot
+        };
+        if let Some(snapshot) = snapshot {
+            Self::persist_snapshot(snapshot).await?;
         }
-        inner.interrupt_channels.remove(&id);
         Ok(())
     }
 
     pub async fn interrupt_task_run(&self, id: TaskId) -> Result<(), StateError> {
-        let mut inner = self.inner.write().await;
-        if let Some(task) = inner.tasks.get_mut(id) {
-            if !task.is_running() {
-                return Err(StateError::TaskNotReady);
-            }
-            task.interrupt_run();
-            inner.tasks.save_task(id).await?;
-        } else {
-            return Err(StateError::TaskNotFound(id));
+        let snapshot = {
+            let mut inner = self.inner.write().await;
+            let snapshot = if let Some(task) = inner.tasks.get_mut(id) {
+                if !task.is_running() {
+                    return Err(StateError::TaskNotReady);
+                }
+                task.interrupt_run();
+                inner.tasks.save_task_snapshot(id)?
+            } else {
+                return Err(StateError::TaskNotFound(id));
+            };
+            inner.interrupt_channels.remove(&id);
+            snapshot
+        };
+        if let Some(snapshot) = snapshot {
+            Self::persist_snapshot(snapshot).await?;
         }
-        inner.interrupt_channels.remove(&id);
         Ok(())
     }
 

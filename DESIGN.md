@@ -201,6 +201,7 @@ Behavior:
 - Terminal sessions are now task-scoped and persistent: reconnecting the websocket for the same task reattaches to the same remote PTY instead of spawning a fresh shell.
 - Terminal sessions are torn down only when the task is archived/deleted (or when the owning agent disconnects), not when a browser tab closes or the user switches task tabs.
 - Terminal websocket supports dynamic PTY resize so the shell tracks pane/window dimensions.
+- `slopagent` task-state mutations now snapshot persistence data while holding the in-memory state lock, then perform async disk writes only after releasing that lock so long-running task updates cannot stall unrelated websocket RPC handling.
 
 ## 9. Testing
 

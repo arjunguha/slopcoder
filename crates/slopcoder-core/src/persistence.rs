@@ -29,6 +29,20 @@ pub struct TasksFile {
     pub tasks: Vec<Task>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PendingEnvironmentSave {
+    env_dir: PathBuf,
+    file: TasksFile,
+}
+
+impl PendingEnvironmentSave {
+    pub async fn persist(self) -> Result<(), PersistenceError> {
+        tokio::fs::create_dir_all(&self.env_dir).await?;
+        let path = TasksFile::path_for_env(&self.env_dir);
+        self.file.save(&path).await
+    }
+}
+
 impl TasksFile {
     /// Get the path to the tasks.yaml file for an environment directory.
     pub fn path_for_env(env_dir: &Path) -> PathBuf {
@@ -157,10 +171,10 @@ impl PersistentTaskStore {
         Ok(())
     }
 
-    /// Save tasks for a specific environment.
-    async fn save_environment(&self, env_name: &str) -> Result<(), PersistenceError> {
-        tracing::debug!("save_environment called for '{}'", env_name);
-
+    fn snapshot_environment(
+        &self,
+        env_name: &str,
+    ) -> Result<PendingEnvironmentSave, PersistenceError> {
         let env_dir = self.env_directories.get(env_name).ok_or_else(|| {
             tracing::error!(
                 "Environment '{}' not found in directories: {:?}",
@@ -179,12 +193,15 @@ impl PersistentTaskStore {
 
         tracing::debug!("Found {} tasks for environment '{}'", tasks.len(), env_name);
 
-        let file = TasksFile { tasks };
-        let path = TasksFile::path_for_env(env_dir);
-        tokio::fs::create_dir_all(env_dir).await?;
-        file.save(&path).await?;
+        Ok(PendingEnvironmentSave {
+            env_dir: env_dir.clone(),
+            file: TasksFile { tasks },
+        })
+    }
 
-        Ok(())
+    /// Save tasks for a specific environment.
+    async fn save_environment(&self, env_name: &str) -> Result<(), PersistenceError> {
+        self.snapshot_environment(env_name)?.persist().await
     }
 
     /// Insert a task and persist to disk.
@@ -192,6 +209,16 @@ impl PersistentTaskStore {
         let env_name = task.environment.clone();
         self.tasks.insert(task.id, task);
         self.save_environment(&env_name).await
+    }
+
+    /// Insert a task and return a persistence snapshot for later saving.
+    pub fn insert_and_snapshot(
+        &mut self,
+        task: Task,
+    ) -> Result<PendingEnvironmentSave, PersistenceError> {
+        let env_name = task.environment.clone();
+        self.tasks.insert(task.id, task);
+        self.snapshot_environment(&env_name)
     }
 
     /// Get a task by ID.
@@ -211,6 +238,18 @@ impl PersistentTaskStore {
             self.save_environment(&task.environment).await
         } else {
             Ok(())
+        }
+    }
+
+    /// Build a persistence snapshot for the task's environment.
+    pub fn save_task_snapshot(
+        &self,
+        id: TaskId,
+    ) -> Result<Option<PendingEnvironmentSave>, PersistenceError> {
+        if let Some(task) = self.tasks.get(&id) {
+            Ok(Some(self.snapshot_environment(&task.environment)?))
+        } else {
+            Ok(None)
         }
     }
 
@@ -252,6 +291,19 @@ impl PersistentTaskStore {
         }
     }
 
+    /// Remove a task and return a persistence snapshot for later saving.
+    pub fn remove_and_snapshot(
+        &mut self,
+        id: TaskId,
+    ) -> Result<(Option<Task>, Option<PendingEnvironmentSave>), PersistenceError> {
+        if let Some(task) = self.tasks.remove(&id) {
+            let snapshot = self.snapshot_environment(&task.environment)?;
+            Ok((Some(task), Some(snapshot)))
+        } else {
+            Ok((None, None))
+        }
+    }
+
     /// Validate all worktrees and remove tasks whose worktrees no longer exist.
     /// Returns the number of tasks removed.
     pub async fn cleanup_stale_tasks(&mut self) -> Result<usize, PersistenceError> {
@@ -284,6 +336,39 @@ impl PersistentTaskStore {
         }
 
         Ok(count)
+    }
+
+    /// Remove stale tasks and return environment snapshots for later saving.
+    pub fn cleanup_stale_tasks_and_snapshot(
+        &mut self,
+    ) -> Result<(usize, Vec<PendingEnvironmentSave>), PersistenceError> {
+        let stale_tasks: Vec<(TaskId, String)> = self
+            .tasks
+            .values()
+            .filter(|t| !t.worktree_path.exists())
+            .map(|t| (t.id, t.environment.clone()))
+            .collect();
+
+        if stale_tasks.is_empty() {
+            return Ok((0, Vec::new()));
+        }
+
+        let count = stale_tasks.len();
+        tracing::info!("Cleaning up {} tasks with missing worktrees", count);
+
+        let mut affected_envs: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for (id, env) in stale_tasks {
+            self.tasks.remove(&id);
+            affected_envs.insert(env);
+        }
+
+        let mut snapshots = Vec::with_capacity(affected_envs.len());
+        for env in affected_envs {
+            snapshots.push(self.snapshot_environment(&env)?);
+        }
+
+        Ok((count, snapshots))
     }
 }
 
@@ -732,5 +817,38 @@ mod tests {
         assert_eq!(store.list().len(), 1);
         assert!(store.get(id1).is_none());
         assert!(store.get(id2).is_some());
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_persistence_helpers() {
+        let temp_dir = TempDir::new().unwrap();
+        let worktree = temp_dir.path().join("feature");
+        tokio::fs::create_dir(&worktree).await.unwrap();
+
+        let mut store = PersistentTaskStore::new();
+        store.register_environment("project".to_string(), temp_dir.path().to_path_buf());
+
+        let task = create_test_task("project", Some("main"), "feature/a", worktree);
+        let task_id = task.id;
+
+        let snapshot = store.insert_and_snapshot(task).unwrap();
+        snapshot.persist().await.unwrap();
+
+        let loaded = TasksFile::load(&TasksFile::path_for_env(temp_dir.path()))
+            .await
+            .unwrap();
+        assert_eq!(loaded.tasks.len(), 1);
+        assert_eq!(loaded.tasks[0].id, task_id);
+
+        let saved_snapshot = store.save_task_snapshot(task_id).unwrap().unwrap();
+        saved_snapshot.persist().await.unwrap();
+
+        let (_removed, removal_snapshot) = store.remove_and_snapshot(task_id).unwrap();
+        removal_snapshot.unwrap().persist().await.unwrap();
+
+        let reloaded = TasksFile::load(&TasksFile::path_for_env(temp_dir.path()))
+            .await
+            .unwrap();
+        assert!(reloaded.tasks.is_empty());
     }
 }
