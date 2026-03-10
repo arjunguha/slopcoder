@@ -9,6 +9,14 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskOutputPageRequest {
+    #[serde(default)]
+    pub before: usize,
+    #[serde(default)]
+    pub limit: usize,
+}
+
 /// Message envelope exchanged over the coordinator<->agent websocket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -62,20 +70,50 @@ pub enum AgentEnvelope {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentRequest {
     ListEnvironments,
-    CreateEnvironment { name: String },
-    ListBranches { environment: String },
+    CreateEnvironment {
+        name: String,
+    },
+    ListBranches {
+        environment: String,
+    },
     ListTasks,
-    GetTask { task_id: TaskId },
-    CreateTask { request: AgentCreateTaskRequest },
-    RenameTask { task_id: TaskId, name: String },
-    SendPrompt { task_id: TaskId, prompt: String },
-    GetTaskOutput { task_id: TaskId },
-    GetTaskDiff { task_id: TaskId },
-    InterruptTask { task_id: TaskId },
-    MergeTask { task_id: TaskId },
-    GetMergeReadiness { task_id: TaskId },
-    ArchiveTask { task_id: TaskId },
-    DeleteTask { task_id: TaskId, force: bool },
+    GetTask {
+        task_id: TaskId,
+    },
+    CreateTask {
+        request: AgentCreateTaskRequest,
+    },
+    RenameTask {
+        task_id: TaskId,
+        name: String,
+    },
+    SendPrompt {
+        task_id: TaskId,
+        prompt: String,
+    },
+    GetTaskOutput {
+        task_id: TaskId,
+        pagination: TaskOutputPageRequest,
+    },
+    GetTaskDiff {
+        task_id: TaskId,
+    },
+    InterruptTask {
+        task_id: TaskId,
+    },
+    MergeTask {
+        task_id: TaskId,
+    },
+    GetMergeReadiness {
+        task_id: TaskId,
+    },
+    ArchiveTask {
+        task_id: TaskId,
+    },
+    DeleteTask {
+        task_id: TaskId,
+        force: bool,
+    },
 }
 
 /// Response payloads from agent -> coordinator.
@@ -106,6 +144,8 @@ pub enum AgentResponse {
     },
     TaskOutput {
         events: Vec<AgentEvent>,
+        total_events: usize,
+        has_more_before: bool,
     },
     TaskDiff {
         staged: String,

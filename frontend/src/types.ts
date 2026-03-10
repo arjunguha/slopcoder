@@ -69,6 +69,8 @@ export interface SendPromptRequest {
 
 export interface TaskOutputResponse {
   events: AgentEvent[];
+  total_events: number;
+  has_more_before: boolean;
 }
 
 export interface TaskDiffResponse {

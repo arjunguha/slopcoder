@@ -130,8 +130,19 @@ export async function sendPrompt(taskId: string, req: SendPromptRequest): Promis
   });
 }
 
-export async function getTaskOutput(taskId: string): Promise<TaskOutputResponse> {
-  return fetchJson(`/api/tasks/${taskId}/output`);
+export async function getTaskOutput(
+  taskId: string,
+  options?: { before?: number; limit?: number }
+): Promise<TaskOutputResponse> {
+  const params = new URLSearchParams();
+  if (options?.before !== undefined) {
+    params.set("before", String(options.before));
+  }
+  if (options?.limit !== undefined) {
+    params.set("limit", String(options.limit));
+  }
+  const query = params.size > 0 ? `?${params.toString()}` : "";
+  return fetchJson(`/api/tasks/${taskId}/output${query}`);
 }
 
 export async function getTaskDiff(taskId: string): Promise<TaskDiffResponse> {

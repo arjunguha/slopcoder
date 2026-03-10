@@ -4,7 +4,9 @@ use futures::{SinkExt, StreamExt};
 use http::StatusCode;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use slopcoder_core::{
-    agent_rpc::{AgentCreateTaskRequest, AgentEnvelope, AgentRequest, AgentResponse},
+    agent_rpc::{
+        AgentCreateTaskRequest, AgentEnvelope, AgentRequest, AgentResponse, TaskOutputPageRequest,
+    },
     anyagent::{resume_anyagent, spawn_anyagent, AgentKind},
     branch_picker::{
         fallback_topic_name, normalize_task_name, pick_task_topic, topic_to_branch_slug,
@@ -607,7 +609,10 @@ async fn handle_request(
         AgentRequest::SendPrompt { task_id, prompt } => {
             send_prompt(state, task_id, prompt, out_tx).await
         }
-        AgentRequest::GetTaskOutput { task_id } => get_task_output(state, task_id).await,
+        AgentRequest::GetTaskOutput {
+            task_id,
+            pagination,
+        } => get_task_output(state, task_id, pagination).await,
         AgentRequest::GetTaskDiff { task_id } => get_task_diff(state, task_id).await,
         AgentRequest::InterruptTask { task_id } => interrupt_task(state, task_id).await,
         AgentRequest::MergeTask { task_id } => merge_task(state, task_id).await,
@@ -816,7 +821,11 @@ async fn interrupt_task(state: AppState, task_id: TaskId) -> Result<AgentRespons
     }
 }
 
-async fn get_task_output(state: AppState, task_id: TaskId) -> Result<AgentResponse, RpcError> {
+async fn get_task_output(
+    state: AppState,
+    task_id: TaskId,
+    pagination: TaskOutputPageRequest,
+) -> Result<AgentResponse, RpcError> {
     let Some(task) = state.get_task(task_id).await else {
         return Err(RpcError::new(StatusCode::NOT_FOUND, "Task not found"));
     };
@@ -829,11 +838,15 @@ async fn get_task_output(state: AppState, task_id: TaskId) -> Result<AgentRespon
     };
 
     let output_path = task_output_path(&env_dir, task_id);
-    let events = read_output_events(&output_path)
+    let page = read_output_events_page(&output_path, pagination.before, pagination.limit)
         .await
         .map_err(|e| RpcError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    Ok(AgentResponse::TaskOutput { events })
+    Ok(AgentResponse::TaskOutput {
+        events: page.events,
+        total_events: page.total_events,
+        has_more_before: page.has_more_before,
+    })
 }
 
 async fn get_task_diff(state: AppState, task_id: TaskId) -> Result<AgentResponse, RpcError> {
@@ -1350,14 +1363,31 @@ fn task_output_path(env_dir: &Path, task_id: TaskId) -> PathBuf {
     env_dir.join(format!("task-{}.jsonl", task_id))
 }
 
-async fn read_output_events(path: &Path) -> Result<Vec<AgentEvent>, std::io::Error> {
+struct OutputEventsPage {
+    events: Vec<AgentEvent>,
+    total_events: usize,
+    has_more_before: bool,
+}
+
+async fn read_output_events_page(
+    path: &Path,
+    before: usize,
+    limit: usize,
+) -> Result<OutputEventsPage, std::io::Error> {
     if !path.exists() {
-        return Ok(Vec::new());
+        return Ok(OutputEventsPage {
+            events: Vec::new(),
+            total_events: 0,
+            has_more_before: false,
+        });
     }
 
+    let limit = limit.max(1);
+    let window_size = before.saturating_add(limit);
     let file = File::open(path).await?;
     let mut lines = BufReader::new(file).lines();
-    let mut events = Vec::new();
+    let mut window = std::collections::VecDeque::with_capacity(window_size);
+    let mut total_events = 0usize;
 
     while let Some(line) = lines.next_line().await? {
         let trimmed = line.trim();
@@ -1365,11 +1395,100 @@ async fn read_output_events(path: &Path) -> Result<Vec<AgentEvent>, std::io::Err
             continue;
         }
         if let Ok(event) = serde_json::from_str::<AgentEvent>(trimmed) {
-            events.push(event);
+            total_events += 1;
+            if window.len() == window_size {
+                window.pop_front();
+            }
+            window.push_back(event);
         }
     }
 
-    Ok(events)
+    let available_before = total_events.saturating_sub(before);
+    let take_count = available_before.min(limit);
+    let drop_count = window
+        .len()
+        .saturating_sub(before.saturating_add(take_count));
+    let events = window
+        .into_iter()
+        .skip(drop_count)
+        .take(take_count)
+        .collect::<Vec<_>>();
+
+    Ok(OutputEventsPage {
+        events,
+        total_events,
+        has_more_before: total_events > before.saturating_add(take_count),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_output_events_page;
+    use slopcoder_core::AgentEvent;
+    use tempfile::NamedTempFile;
+    use tokio::fs;
+
+    async fn write_events(lines: &[&str]) -> NamedTempFile {
+        let file = NamedTempFile::new().expect("temp file");
+        let body = format!("{}\n", lines.join("\n"));
+        fs::write(file.path(), body).await.expect("write events");
+        file
+    }
+
+    #[tokio::test]
+    async fn read_output_events_page_returns_latest_window() {
+        let file = write_events(&[
+            r#"{"type":"prompt.sent","prompt":"one"}"#,
+            r#"{"type":"prompt.sent","prompt":"two"}"#,
+            r#"{"type":"prompt.sent","prompt":"three"}"#,
+            r#"{"type":"prompt.sent","prompt":"four"}"#,
+        ])
+        .await;
+
+        let page = read_output_events_page(file.path(), 0, 2)
+            .await
+            .expect("page");
+
+        assert_eq!(page.total_events, 4);
+        assert!(page.has_more_before);
+        let prompts = page
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::PromptSent { prompt } => Some(prompt.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(prompts, vec!["three", "four"]);
+    }
+
+    #[tokio::test]
+    async fn read_output_events_page_returns_older_window() {
+        let file = write_events(&[
+            r#"{"type":"prompt.sent","prompt":"one"}"#,
+            r#"{"type":"prompt.sent","prompt":"two"}"#,
+            r#"{"type":"prompt.sent","prompt":"three"}"#,
+            r#"{"type":"prompt.sent","prompt":"four"}"#,
+            r#"{"type":"prompt.sent","prompt":"five"}"#,
+        ])
+        .await;
+
+        let page = read_output_events_page(file.path(), 2, 2)
+            .await
+            .expect("page");
+
+        assert_eq!(page.total_events, 5);
+        assert!(page.has_more_before);
+        let prompts = page
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::PromptSent { prompt } => Some(prompt.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(prompts, vec!["two", "three"]);
+    }
 }
 
 struct DiffResult {

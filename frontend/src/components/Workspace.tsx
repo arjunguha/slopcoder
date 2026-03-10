@@ -46,8 +46,7 @@ type RightMode =
   | { kind: "task"; taskId: string };
 
 type RightTab = "conversation" | "diff" | "terminal";
-const INITIAL_EVENT_RENDER_COUNT = 120;
-const EVENT_RENDER_CHUNK_SIZE = 120;
+const TASK_OUTPUT_PAGE_SIZE = 120;
 
 function basenameFromPath(path: string): string {
   const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -329,7 +328,10 @@ function TaskPane(props: {
   const [task, { refetch: refetchTask }] = createResource(() => props.taskId, getTask);
   const [persistedOutput, { refetch: refetchOutput }] = createResource(
     () => props.taskId,
-    async (id) => (await getTaskOutput(id)).events
+    async (id) => ({
+      taskId: id,
+      ...(await getTaskOutput(id, { limit: TASK_OUTPUT_PAGE_SIZE })),
+    })
   );
   const [diff, { refetch: refetchDiff }] = createResource(
     () => (props.hideDiff ? null : props.taskId),
@@ -352,20 +354,14 @@ function TaskPane(props: {
       return getMergeStatus(id);
     }
   );
-  const persistedEvents = createMemo(() => persistedOutput.latest ?? persistedOutput() ?? []);
   const diffData = createMemo(() => diff.latest ?? diff());
 
+  const [persistedEvents, setPersistedEvents] = createSignal<AgentEvent[]>([]);
+  const [persistedTotalEvents, setPersistedTotalEvents] = createSignal(0);
+  const [hasMorePersistedBefore, setHasMorePersistedBefore] = createSignal(false);
+  const [loadingOlderEvents, setLoadingOlderEvents] = createSignal(false);
   const [liveEvents, setLiveEvents] = createSignal<AgentEvent[]>([]);
   const allEvents = createMemo(() => [...persistedEvents(), ...liveEvents()]);
-  const [renderedEventCount, setRenderedEventCount] = createSignal(INITIAL_EVENT_RENDER_COUNT);
-  const visibleEvents = createMemo(() => {
-    const events = allEvents();
-    const count = renderedEventCount();
-    if (count >= events.length) {
-      return events;
-    }
-    return events.slice(events.length - count);
-  });
   const [prompt, setPrompt] = createSignal("");
   const [sending, setSending] = createSignal(false);
   const [merging, setMerging] = createSignal(false);
@@ -388,20 +384,32 @@ function TaskPane(props: {
       outputRef.scrollTop = outputRef.scrollHeight;
     }
   };
-  const revealOlderEvents = () => {
-    const totalEvents = allEvents().length;
-    if (renderedEventCount() >= totalEvents) {
+  const loadOlderEvents = async () => {
+    if (loadingOlderEvents() || !hasMorePersistedBefore()) {
       return;
     }
 
     const previousHeight = outputRef?.scrollHeight ?? 0;
-    setRenderedEventCount((prev) => Math.min(totalEvents, prev + EVENT_RENDER_CHUNK_SIZE));
-    if (outputRef) {
-      requestAnimationFrame(() => {
-        if (!outputRef) return;
-        const nextHeight = outputRef.scrollHeight;
-        outputRef.scrollTop += nextHeight - previousHeight;
+    setLoadingOlderEvents(true);
+    try {
+      const page = await getTaskOutput(props.taskId, {
+        before: persistedEvents().length,
+        limit: TASK_OUTPUT_PAGE_SIZE,
       });
+      setPersistedEvents((prev) => [...page.events, ...prev]);
+      setPersistedTotalEvents(page.total_events);
+      setHasMorePersistedBefore(page.has_more_before);
+      if (outputRef) {
+        requestAnimationFrame(() => {
+          if (!outputRef) return;
+          const nextHeight = outputRef.scrollHeight;
+          outputRef.scrollTop += nextHeight - previousHeight;
+        });
+      }
+    } catch (err) {
+      console.error("Failed to load older task events:", err);
+    } finally {
+      setLoadingOlderEvents(false);
     }
   };
 
@@ -409,12 +417,24 @@ function TaskPane(props: {
     const taskId = props.taskId;
     setPrompt(getTaskMessageDraft(taskId));
     setDraftHydratedTaskId(taskId);
+    setPersistedEvents([]);
+    setPersistedTotalEvents(0);
+    setHasMorePersistedBefore(false);
     setLiveEvents([]);
     setPendingInitialScroll(true);
-    setRenderedEventCount(INITIAL_EVENT_RENDER_COUNT);
     setTaskMessage(null);
     setActionDialog(null);
     setShowForcePrune(false);
+  });
+
+  createEffect(() => {
+    const page = persistedOutput.latest ?? persistedOutput();
+    if (!page || page.taskId !== props.taskId) {
+      return;
+    }
+    setPersistedEvents(page.events);
+    setPersistedTotalEvents(page.total_events);
+    setHasMorePersistedBefore(page.has_more_before);
   });
 
   createEffect(() => {
@@ -438,7 +458,7 @@ function TaskPane(props: {
       pendingInitialScroll: pendingInitialScroll(),
       activeTab: props.activeTab(),
       persistedOutputLoading: persistedOutput.loading,
-      renderedEventCount: renderedEventCount(),
+      renderedEventCount: persistedEvents().length,
       totalEvents: allEvents().length,
     });
     if (!shouldScroll) {
@@ -448,18 +468,6 @@ function TaskPane(props: {
       scrollOutputToBottom();
       setPendingInitialScroll(false);
     });
-  });
-
-  createEffect(() => {
-    const totalEvents = allEvents().length;
-    const rendered = renderedEventCount();
-    if (rendered >= totalEvents) {
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      setRenderedEventCount((prev) => Math.min(totalEvents, prev + EVENT_RENDER_CHUNK_SIZE));
-    }, 16);
-    onCleanup(() => window.clearTimeout(timer));
   });
 
   createEffect(() => {
@@ -753,13 +761,20 @@ function TaskPane(props: {
               ref={outputRef}
               onScroll={() => {
                 if (outputRef && outputRef.scrollTop <= 160) {
-                  revealOlderEvents();
+                  void loadOlderEvents();
                 }
               }}
               class="flex-1 min-w-0 min-h-0 overflow-x-auto overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-900 p-4 space-y-3"
             >
-              <For each={visibleEvents()}>{(event) => <EventRow event={event} />}</For>
-              <Show when={taskData()!.status === "running" && visibleEvents().length === 0}>
+              <Show when={hasMorePersistedBefore()}>
+                <div class="text-center text-xs text-gray-500 dark:text-gray-400">
+                  {loadingOlderEvents()
+                    ? "Loading older messages..."
+                    : `Scroll up to load older messages (${persistedEvents().length}/${persistedTotalEvents()} loaded)`}
+                </div>
+              </Show>
+              <For each={allEvents()}>{(event) => <EventRow event={event} />}</For>
+              <Show when={taskData()!.status === "running" && allEvents().length === 0}>
                 <div class="text-gray-500 dark:text-gray-400 animate-pulse">Waiting for output...</div>
               </Show>
             </div>

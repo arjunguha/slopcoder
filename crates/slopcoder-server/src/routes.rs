@@ -5,7 +5,9 @@ use futures::future::join_all;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use slopcoder_core::{
-    agent_rpc::{AgentCreateTaskRequest, AgentEnvelope, AgentRequest, AgentResponse},
+    agent_rpc::{
+        AgentCreateTaskRequest, AgentEnvelope, AgentRequest, AgentResponse, TaskOutputPageRequest,
+    },
     task::{Task, TaskId},
     AgentEvent,
 };
@@ -306,6 +308,7 @@ fn tasks_routes(
 
     let output = warp::path!(String / "output")
         .and(warp::get())
+        .and(warp::query::<TaskOutputQuery>())
         .and(with_state(state.clone()))
         .and_then(get_task_output);
 
@@ -633,9 +636,27 @@ async fn send_prompt(
 #[derive(Serialize)]
 struct TaskOutputResponse {
     events: Vec<AgentEvent>,
+    total_events: usize,
+    has_more_before: bool,
 }
 
-async fn get_task_output(id: String, state: AppState) -> Result<impl Reply, Infallible> {
+#[derive(Deserialize)]
+struct TaskOutputQuery {
+    #[serde(default)]
+    before: usize,
+    #[serde(default = "default_task_output_limit")]
+    limit: usize,
+}
+
+fn default_task_output_limit() -> usize {
+    120
+}
+
+async fn get_task_output(
+    id: String,
+    query: TaskOutputQuery,
+    state: AppState,
+) -> Result<impl Reply, Infallible> {
     let task_id = match parse_task_id(&id) {
         Ok(id) => id,
         Err(reply) => return Ok(reply),
@@ -646,9 +667,26 @@ async fn get_task_output(id: String, state: AppState) -> Result<impl Reply, Infa
         Err(e) => return Ok(error_reply(state_error_status(&e), e.to_string())),
     };
 
-    match agent.request(AgentRequest::GetTaskOutput { task_id }).await {
-        Ok(AgentResponse::TaskOutput { events }) => Ok(warp::reply::with_status(
-            warp::reply::json(&TaskOutputResponse { events }),
+    match agent
+        .request(AgentRequest::GetTaskOutput {
+            task_id,
+            pagination: TaskOutputPageRequest {
+                before: query.before,
+                limit: query.limit.max(1).min(500),
+            },
+        })
+        .await
+    {
+        Ok(AgentResponse::TaskOutput {
+            events,
+            total_events,
+            has_more_before,
+        }) => Ok(warp::reply::with_status(
+            warp::reply::json(&TaskOutputResponse {
+                events,
+                total_events,
+                has_more_before,
+            }),
             StatusCode::OK,
         )),
         Ok(_) => Ok(error_reply(

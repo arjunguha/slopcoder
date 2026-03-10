@@ -185,10 +185,10 @@ Behavior:
 - Delete action uses an inline warning dialog (no JS modal) and supports force prune when normal prune fails.
 - Unused legacy `frontend/src/components/TaskDetail.tsx` has been removed; `Workspace.tsx` is the only task conversation UI.
 - Task detail reactive resources must not reference `taskData` before it is initialized (prevents runtime TDZ errors when opening tasks).
-- Opening a different task conversation now waits for transcript loading + incremental chunk rendering to finish, then auto-scrolls to the very bottom.
+- Opening a different task conversation now waits for the latest transcript page to load, then auto-scrolls to the very bottom.
 - Switching back to the Conversation tab also auto-scrolls the transcript to the newest message.
-- Conversation transcripts now render progressively in chunks (latest-first) to reduce UI lag on long histories.
-- Scrolling to the top of the transcript incrementally reveals older events.
+- Task transcript loading is paginated end-to-end: the browser requests only the newest page first, and older events are fetched on demand as the user scrolls upward.
+- Transcript pagination is serviced by `slopagent`; the coordinator and browser no longer transfer an entire persisted task log just to open a task.
 - Conversation pane constrains message width (`min-w-0`) and enables horizontal scrolling so long unbroken lines (for example, markdown code-fence lines) do not widen the whole page.
 - Task conversation view keeps the task header pinned at the top and the follow-up composer pinned at the bottom (mobile and desktop), with the transcript as the primary scrollable region.
 - Follow-up prompt form keeps the send button on-screen by allowing the textarea to shrink and forcing the button to remain non-shrinking.
