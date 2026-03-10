@@ -1302,11 +1302,6 @@ export default function Workspace() {
                   <Show when={host() && host()!.host !== host()!.hostname}>
                     <div class="text-[11px] text-gray-500 dark:text-gray-400">{host()?.hostname}</div>
                   </Show>
-                  <Show when={!connected()}>
-                    <div class="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500">
-                      Disconnected
-                    </div>
-                  </Show>
                 </div>
               );
             }}
@@ -1436,11 +1431,6 @@ export default function Workspace() {
                               <StatusBadge status={task()!.status} />
                             </Show>
                           </div>
-                          <Show when={!hostConnected()}>
-                            <div class="mt-1 text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500">
-                              Disconnected
-                            </div>
-                          </Show>
                         </div>
                       );
                     }}
