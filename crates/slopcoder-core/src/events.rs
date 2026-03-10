@@ -188,7 +188,8 @@ pub struct CompletedItem {
     pub output: Option<String>,
 
     /// Whether any part of this item was truncated during normalization.
-    #[serde(default, skip_serializing_if = "is_false")]
+    /// This remains internal normalization metadata and is not sent to clients.
+    #[serde(default, skip_serializing)]
     pub truncated: bool,
 
     /// Additional fields we don't explicitly model.
@@ -396,10 +397,6 @@ fn truncate_json_value(
         }
         other => other,
     }
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 /// Token usage statistics.
